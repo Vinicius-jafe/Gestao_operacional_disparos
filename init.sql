@@ -1,0 +1,109 @@
+CREATE TABLE IF NOT EXISTS disparos_eventos (
+    id VARCHAR(100) PRIMARY KEY,
+    contrato VARCHAR(100),
+    numero_contrato VARCHAR(100),
+    chave_cliente VARCHAR(255),
+    empresa VARCHAR(150),
+    razao_social VARCHAR(255),
+    departamento VARCHAR(100),
+    hora_evento VARCHAR(50),
+    dt_hora TIMESTAMP,
+    data_evento DATE,
+    ano_mes VARCHAR(7),
+    hora_int INTEGER,
+    minuto_do_dia INTEGER,
+    final_de_semana BOOLEAN,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS carteira_filiais (
+    filial VARCHAR(150) PRIMARY KEY,
+    clientes INTEGER NOT NULL DEFAULT 0,
+    tipo VARCHAR(50) NOT NULL DEFAULT 'FILIAL',
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS arquivos_processados (
+    nome_arquivo VARCHAR(255) PRIMARY KEY,
+    hash_sha256 VARCHAR(64) NOT NULL,
+    tamanho_bytes BIGINT NOT NULL,
+    status VARCHAR(50) NOT NULL,
+    linhas_lidas INTEGER DEFAULT 0,
+    linhas_inseridas INTEGER DEFAULT 0,
+    mensagem_erro TEXT,
+    data_processamento TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Tabela obrigatória para gravação de histórico de tratativas e workflow
+CREATE TABLE IF NOT EXISTS tratativas_reincidencia (
+    id SERIAL PRIMARY KEY,
+    chave_cliente VARCHAR(100) NOT NULL,
+    ano_mes VARCHAR(7) NOT NULL,
+    status VARCHAR(100) NOT NULL,
+    responsavel VARCHAR(150),
+    observacao TEXT,
+    data_atualizacao TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT unq_chave_ano_mes UNIQUE (chave_cliente, ano_mes)
+);
+
+-- Índices essenciais para consultas rápidas
+CREATE INDEX IF NOT EXISTS idx_disparos_empresa ON disparos_eventos (empresa);
+CREATE INDEX IF NOT EXISTS idx_disparos_departamento ON disparos_eventos (departamento);
+CREATE INDEX IF NOT EXISTS idx_disparos_ano_mes ON disparos_eventos (ano_mes);
+CREATE INDEX IF NOT EXISTS idx_disparos_data_evento ON disparos_eventos (data_evento);
+CREATE INDEX IF NOT EXISTS idx_disparos_chave_cliente ON disparos_eventos (chave_cliente);
+
+-- Carga inicial com a base oficial de filiais e núcleos especiais
+INSERT INTO carteira_filiais (filial, clientes, tipo) VALUES
+('F - BELO HORIZONTE', 6900, 'FILIAL'),
+('F - GOV VALADARES', 161, 'FILIAL'),
+('F - MONTES CLAROS', 84, 'FILIAL'),
+('F - UBERLANDIA', 184, 'FILIAL'),
+('F - DIVINOPOLIS', 544, 'FILIAL'),
+('F - IPATINGA', 458, 'FILIAL'),
+('F - UBA', 233, 'FILIAL'),
+('F - JUIZ DE FORA', 749, 'FILIAL'),
+('FILIAL EMIVE CAMPOS DOS GOYTACAZES', 304, 'FILIAL'),
+('FILIAL EMIVE RIO DE JANEIRO', 1592, 'FILIAL'),
+('FILIAL EMIVE NITEROI', 429, 'FILIAL'),
+('FILIAL EMIVE VITORIA', 1490, 'FILIAL'),
+('FILIAL EMIVE LINHARES', 660, 'FILIAL'),
+('FILIAL EMIVE MANAUS', 1221, 'FILIAL'),
+('FILIAL EMIVE PORTO VELHO', 31, 'FILIAL'),
+('FILIAL EMIVE BELEM', 237, 'FILIAL'),
+('FILIAL EMIVE FORTALEZA', 1030, 'FILIAL'),
+('FILIAL EMIVE SAO LUIZ', 588, 'FILIAL'),
+('FILIAL EMIVE NATAL', 19, 'FILIAL'),
+('FILIAL EMIVE JOAO PESSOA', 931, 'FILIAL'),
+('FILIAL EMIVE CAMPINA GRANDE', 200, 'FILIAL'),
+('FILIAL EMIVE RECIFE', 950, 'FILIAL'),
+('FILIAL EMIVE CARUARU', 369, 'FILIAL'),
+('FILIAL EMIVE GOIANIA', 885, 'FILIAL'),
+('FILIAL EMIVE BRASILIA', 1138, 'FILIAL'),
+('FILIAL EMIVE CAMPO GRANDE', 1305, 'FILIAL'),
+('FILIAL EMIVE CUIABA', 684, 'FILIAL'),
+('FILIAL EMIVE PETROLINA', 61, 'FILIAL'),
+('FILIAL EMIVE MACEIO', 832, 'FILIAL'),
+('FILIAL EMIVE FEIRA DE SANTANA', 95, 'FILIAL'),
+('FILIAL EMIVE SALVADOR', 476, 'FILIAL'),
+('FILIAL EMIVE ARACAJU', 520, 'FILIAL'),
+('FILIAL EMIVE TERESINA', 4, 'FILIAL'),
+('FILIAL EMIVE SP BERRINI', 648, 'FILIAL'),
+('FILIAL EMIVE SP FARIA LIMA', 711, 'FILIAL'),
+('FILIAL EMIVE SAO CAETANO DO SUL', 1360, 'FILIAL'),
+('FILIAL EMIVE CAMPINAS', 1244, 'FILIAL'),
+('FILIAL EMIVE TATUAPE', 389, 'FILIAL'),
+('FILIAL EMIVE SAO JOSE DOS CAMPOS', 730, 'FILIAL'),
+('FILIAL EMIVE RIBEIRAO PRETO', 252, 'FILIAL'),
+('FILIAL EMIVE PORTO ALEGRE', 495, 'FILIAL'),
+('FILIAL EMIVE CURITIBA', 241, 'FILIAL'),
+('FILIAL EMIVE LONDRINA', 29, 'FILIAL'),
+('FILIAL EMIVE JOINVILLE', 98, 'FILIAL'),
+('FILIAL EMIVE BALNEARIO CAMBORIU', 271, 'FILIAL'),
+('FILIAL EMIVE FLORIANOPOLIS', 514, 'FILIAL'),
+('MANUTENÇÃO REGIONAL', 7115, 'ESPECIAL'),
+('REDES', 1117, 'ESPECIAL'),
+('TOTENS', 175, 'ESPECIAL'),
+('SMART P', 97, 'ESPECIAL'),
+('DGP', 290, 'ESPECIAL')
+ON CONFLICT (filial) DO NOTHING;

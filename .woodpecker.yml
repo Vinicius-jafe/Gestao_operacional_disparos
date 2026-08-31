@@ -1,0 +1,15 @@
+pipeline:
+  # Etapa 1: Validar sintaxe e dependências Python
+  lint-and-check:
+    image: python:3.11-slim
+    commands:
+      - pip install -r requirements.txt
+      - python -m py_compile src/app.py
+
+  # Etapa 2: Construir a imagem Docker de produção
+  build-docker-image:
+    image: docker:dind
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    commands:
+      - docker build -t pipeline-disparos:latest .
