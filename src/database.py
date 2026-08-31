@@ -145,38 +145,73 @@ def normalizar_nome_filial(empresa: str, logradouro: str = "") -> str:
     return emp
 
 def verificar_integridade_banco() -> None:
-    """Verifica se o schema existe no PostgreSQL."""
-    try:
-        with engine.connect() as conn:
-            query = text("""
-                SELECT table_name 
-                FROM information_schema.tables 
-                WHERE table_schema = 'public';
-            """)
-            tabelas_existentes = {row[0] for row in conn.execute(query).fetchall()}
-            
-            faltantes = [t for t in TABELAS_OBRIGATORIAS if t not in tabelas_existentes]
-            if faltantes:
-                raise RuntimeError(
-                    f"CRITICO: Schema incompleto no PostgreSQL. Tabelas ausentes: {faltantes}."
+    """Garante que todas as tabelas necessárias existam no PostgreSQL sem abortar com SystemExit."""
+    ddl_tabelas = """
+    CREATE TABLE IF NOT EXISTS arquivos_processados (
+        nome_arquivo VARCHAR(255) PRIMARY KEY,
+        hash_sha256 VARCHAR(64) NOT NULL,
+        tamanho_bytes BIGINT NOT NULL,
+        status VARCHAR(20) NOT NULL,
+        linhas_lidas INT DEFAULT 0,
+        linhas_inseridas INT DEFAULT 0,
+        mensagem_erro TEXT,
+        data_processamento TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS carteira_filiais (
+        filial VARCHAR(150) PRIMARY KEY,
+        clientes INT NOT NULL,
+        tipo VARCHAR(50) DEFAULT 'FILIAL'
+    );
+
+    CREATE TABLE IF NOT EXISTS disparos_eventos (
+        id BIGINT PRIMARY KEY,
+        contrato VARCHAR(50),
+        numero_contrato VARCHAR(50),
+        chave_cliente VARCHAR(100),
+        empresa VARCHAR(150),
+        razao_social VARCHAR(255),
+        departamento VARCHAR(100),
+        hora_evento VARCHAR(50),
+        dt_hora TIMESTAMP,
+        data_evento DATE,
+        ano_mes VARCHAR(7),
+        hora_int INT,
+        minuto_do_dia INT,
+        final_de_semana BOOLEAN
+    );
+
+    CREATE TABLE IF NOT EXISTS tratativas_reincidencia (
+        id SERIAL PRIMARY KEY,
+        chave_cliente VARCHAR(100) NOT NULL,
+        ano_mes VARCHAR(7) NOT NULL,
+        status VARCHAR(100) NOT NULL,
+        responsavel VARCHAR(150),
+        observacao TEXT,
+        data_atualizacao TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT unq_chave_ano_mes UNIQUE (chave_cliente, ano_mes)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_disparos_ano_mes ON disparos_eventos (ano_mes);
+    CREATE INDEX IF NOT EXISTS idx_disparos_chave_cliente ON disparos_eventos (chave_cliente);
+    CREATE INDEX IF NOT EXISTS idx_disparos_empresa ON disparos_eventos (empresa);
+    """
+    with engine.begin() as conn:
+        conn.execute(text(ddl_tabelas))
+        
+        # Popula a carteira inicial se estiver vazia
+        total_carteira = conn.execute(text("SELECT COUNT(*) FROM carteira_filiais")).scalar()
+        if total_carteira == 0:
+            for filial, (qtd, tipo) in CARTEIRA_INICIAL_ESTRUTURADA.items():
+                conn.execute(
+                    text("""
+                        INSERT INTO carteira_filiais (filial, clientes, tipo)
+                        VALUES (:filial, :clientes, :tipo)
+                        ON CONFLICT (filial) DO NOTHING;
+                    """),
+                    {"filial": filial, "clientes": qtd, "tipo": tipo}
                 )
-            
-            total_carteira = conn.execute(text("SELECT COUNT(*) FROM carteira_filiais")).scalar()
-            if total_carteira == 0:
-                for filial, (qtd, tipo) in CARTEIRA_INICIAL_ESTRUTURADA.items():
-                    conn.execute(
-                        text("""
-                            INSERT INTO carteira_filiais (filial, clientes, tipo)
-                            VALUES (:filial, :clientes, :tipo)
-                            ON CONFLICT (filial) DO NOTHING;
-                        """),
-                        {"filial": filial, "clientes": qtd, "tipo": tipo}
-                    )
-                conn.commit()
-    except Exception as e:
-        raise SystemExit(f"Erro irrecuperavel ao conectar com o banco de dados: {e}")
-
-
+                
 def obter_carteira_df() -> pd.DataFrame:
     with engine.connect() as conn:
         return pd.read_sql("SELECT filial, clientes, tipo FROM carteira_filiais ORDER BY filial", conn)
