@@ -2,3 +2,6 @@ dados/
 saida/
 __pycache__/
 .env
+.pytest_cache/
+.coverage
+htmlcov/

@@ -4,7 +4,7 @@ from datetime import date
 from pathlib import Path
 from typing import Dict, List, Optional
 import pandas as pd
-from sqlalchemy import create_engine, text
+from sqlalchemy import bindparam, create_engine, text
 from src.config import CARTEIRA_INICIAL_ESTRUTURADA, DB_URL, PASTA_DADOS
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -12,7 +12,6 @@ logger = logging.getLogger(__name__)
 
 engine = create_engine(DB_URL, pool_pre_ping=True)
 
-TABELAS_OBRIGATORIAS = ["arquivos_processados", "carteira_filiais", "disparos_eventos", "tratativas_reincidencia"]
 COLUNAS_OBRIGATORIAS_EXCEL = ["Id", "Contrato", "Numero Contrato", "Hora evento"]
 
 def normalizar_nome_filial(empresa: str, logradouro: str = "") -> str:
@@ -145,61 +144,66 @@ def normalizar_nome_filial(empresa: str, logradouro: str = "") -> str:
     return emp
 
 def verificar_integridade_banco() -> None:
-    """Garante que todas as tabelas necessárias existam no PostgreSQL sem abortar com SystemExit."""
-    ddl_tabelas = """
-    CREATE TABLE IF NOT EXISTS arquivos_processados (
-        nome_arquivo VARCHAR(255) PRIMARY KEY,
-        hash_sha256 VARCHAR(64) NOT NULL,
-        tamanho_bytes BIGINT NOT NULL,
-        status VARCHAR(20) NOT NULL,
-        linhas_lidas INT DEFAULT 0,
-        linhas_inseridas INT DEFAULT 0,
-        mensagem_erro TEXT,
-        data_processamento TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-    );
+    """Valida o schema PostgreSQL externo e carrega a carteira se ela estiver vazia."""
+    colunas_esperadas = {
+        "disparos_eventos": {
+            "id",
+            "contrato",
+            "numero_contrato",
+            "chave_cliente",
+            "empresa",
+            "razao_social",
+            "departamento",
+            "hora_evento",
+            "dt_hora",
+            "data_evento",
+            "ano_mes",
+            "hora_int",
+            "minuto_do_dia",
+            "final_de_semana",
+        },
+        "carteira_filiais": {"filial", "clientes", "tipo"},
+        "arquivos_processados": {
+            "nome_arquivo",
+            "hash_sha256",
+            "tamanho_bytes",
+            "status",
+            "linhas_lidas",
+            "linhas_inseridas",
+            "mensagem_erro",
+            "data_processamento",
+        },
+    }
+    consulta_colunas = text("""
+        SELECT table_name, column_name
+        FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name IN :table_names
+    """).bindparams(bindparam("table_names", expanding=True))
 
-    CREATE TABLE IF NOT EXISTS carteira_filiais (
-        filial VARCHAR(150) PRIMARY KEY,
-        clientes INT NOT NULL,
-        tipo VARCHAR(50) DEFAULT 'FILIAL'
-    );
-
-    CREATE TABLE IF NOT EXISTS disparos_eventos (
-        id BIGINT PRIMARY KEY,
-        contrato VARCHAR(50),
-        numero_contrato VARCHAR(50),
-        chave_cliente VARCHAR(100),
-        empresa VARCHAR(150),
-        razao_social VARCHAR(255),
-        departamento VARCHAR(100),
-        hora_evento VARCHAR(50),
-        dt_hora TIMESTAMP,
-        data_evento DATE,
-        ano_mes VARCHAR(7),
-        hora_int INT,
-        minuto_do_dia INT,
-        final_de_semana BOOLEAN
-    );
-
-    CREATE TABLE IF NOT EXISTS tratativas_reincidencia (
-        id SERIAL PRIMARY KEY,
-        chave_cliente VARCHAR(100) NOT NULL,
-        ano_mes VARCHAR(7) NOT NULL,
-        status VARCHAR(100) NOT NULL,
-        responsavel VARCHAR(150),
-        observacao TEXT,
-        data_atualizacao TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-        CONSTRAINT unq_chave_ano_mes UNIQUE (chave_cliente, ano_mes)
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_disparos_ano_mes ON disparos_eventos (ano_mes);
-    CREATE INDEX IF NOT EXISTS idx_disparos_chave_cliente ON disparos_eventos (chave_cliente);
-    CREATE INDEX IF NOT EXISTS idx_disparos_empresa ON disparos_eventos (empresa);
-    """
     with engine.begin() as conn:
-        conn.execute(text(ddl_tabelas))
-        
-        # Popula a carteira inicial se estiver vazia
+        existentes = conn.execute(
+            consulta_colunas,
+            {"table_names": list(colunas_esperadas)},
+        ).all()
+        colunas_encontradas: Dict[str, set] = {}
+        for tabela, coluna in existentes:
+            colunas_encontradas.setdefault(tabela, set()).add(coluna)
+
+        faltantes = {
+            tabela: sorted(colunas - colunas_encontradas.get(tabela, set()))
+            for tabela, colunas in colunas_esperadas.items()
+            if colunas - colunas_encontradas.get(tabela, set())
+        }
+        if faltantes:
+            detalhes = "; ".join(
+                f"{tabela}: {', '.join(colunas)}"
+                for tabela, colunas in sorted(faltantes.items())
+            )
+            raise RuntimeError(
+                f"Schema PostgreSQL externo ausente ou incompleto ({detalhes})."
+            )
+
         total_carteira = conn.execute(text("SELECT COUNT(*) FROM carteira_filiais")).scalar()
         if total_carteira == 0:
             for filial, (qtd, tipo) in CARTEIRA_INICIAL_ESTRUTURADA.items():
@@ -493,43 +497,3 @@ def carregar_eventos(data_inicio: Optional[date] = None, data_fim: Optional[date
         df["data_evento"] = pd.to_datetime(df["data_evento"]).dt.date
 
     return df
-
-
-def carregar_tratativas(ano_mes: str) -> pd.DataFrame:
-    """Busca as tratativas salvas no PostgreSQL para a competência."""
-    query = text("""
-        SELECT chave_cliente, status, responsavel, observacao, data_atualizacao
-        FROM tratativas_reincidencia
-        WHERE ano_mes = :ano_mes
-    """)
-    with engine.connect() as conn:
-        return pd.read_sql(query, conn, params={"ano_mes": ano_mes})
-
-
-def salvar_tratativa(
-    chave_cliente: str,
-    ano_mes: str,
-    status: str,
-    responsavel: str,
-    observacao: str
-) -> None:
-    """Executa Upsert da tratativa mantendo auditoria por cliente/mês."""
-    query = text("""
-        INSERT INTO tratativas_reincidencia (
-            chave_cliente, ano_mes, status, responsavel, observacao, data_atualizacao
-        )
-        VALUES (:chave, :ano_mes, :status, :responsavel, :observacao, CURRENT_TIMESTAMP)
-        ON CONFLICT (chave_cliente, ano_mes) DO UPDATE SET
-            status = EXCLUDED.status,
-            responsavel = EXCLUDED.responsavel,
-            observacao = EXCLUDED.observacao,
-            data_atualizacao = CURRENT_TIMESTAMP;
-    """)
-    with engine.begin() as conn:
-        conn.execute(query, {
-            "chave": chave_cliente,
-            "ano_mes": ano_mes,
-            "status": status,
-            "responsavel": responsavel,
-            "observacao": observacao
-        })

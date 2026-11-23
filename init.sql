@@ -34,18 +34,6 @@ CREATE TABLE IF NOT EXISTS arquivos_processados (
     data_processamento TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Tabela obrigatória para gravação de histórico de tratativas e workflow
-CREATE TABLE IF NOT EXISTS tratativas_reincidencia (
-    id SERIAL PRIMARY KEY,
-    chave_cliente VARCHAR(100) NOT NULL,
-    ano_mes VARCHAR(7) NOT NULL,
-    status VARCHAR(100) NOT NULL,
-    responsavel VARCHAR(150),
-    observacao TEXT,
-    data_atualizacao TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT unq_chave_ano_mes UNIQUE (chave_cliente, ano_mes)
-);
-
 -- Índices essenciais para consultas rápidas
 CREATE INDEX IF NOT EXISTS idx_disparos_empresa ON disparos_eventos (empresa);
 CREATE INDEX IF NOT EXISTS idx_disparos_departamento ON disparos_eventos (departamento);

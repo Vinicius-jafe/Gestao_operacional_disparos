@@ -72,8 +72,8 @@ def loop_horario():
     print("=== Coletor Horario Ativo (Deptos: 1,4,6) ===")
     while True:
         extrair_e_gravar_disparos(horas_retroativas=48)
-        print("Aguardando 1 hora (3600s) para o proximo ciclo...")
-        time.sleep(3600)
+        print("Aguardando 5 minutos para o proximo ciclo...")
+        time.sleep(300)
 
 
 if __name__ == "__main__":

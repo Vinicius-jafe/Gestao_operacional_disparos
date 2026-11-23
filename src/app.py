@@ -1,365 +1,981 @@
 import calendar
-from datetime import date, datetime, timedelta
+from datetime import date, time, timedelta
 import io
+
 import pandas as pd
 import plotly.express as px
 import streamlit as st
 
 from src.database import (
-    verificar_integridade_banco,
-    sincronizar_planilhas,
     carregar_eventos,
+    normalizar_nome_filial,
     obter_carteira_df,
     obter_carteira_filiais_dict,
     salvar_carteira,
-    carregar_tratativas,
-    salvar_tratativa
+    sincronizar_planilhas,
+    verificar_integridade_banco,
 )
-from src.metrics import calcular_metricas_filiais, processar_reincidencia_clientes
+from src.metrics import (
+    calcular_distribuicao_horaria,
+    calcular_distribuicao_periodos,
+    calcular_metricas_filiais,
+    calcular_recorrencia_complementar,
+    calcular_taxa_por_carteira,
+    comparar_disparos_mensais,
+    detectar_limitador,
+    detectar_possivel_mau_uso,
+    processar_reincidencia_clientes,
+)
+from src.presentation import incluir_cod_contrato
 
-st.set_page_config(page_title="Gestão de Disparos Emive", layout="wide")
 
-# ================= CARGA E INTEGRIDADE =================
+st.set_page_config(
+    page_title="Gestão de Disparos",
+    page_icon="📊",
+    layout="wide",
+)
+
+st.markdown(
+    """
+    <style>
+    :root {
+        color-scheme: dark;
+        --page-bg: #0e1013;
+        --surface: #191c21;
+        --surface-raised: #20242a;
+        --ink: #f1f3f5;
+        --muted: #a3aab5;
+        --accent: #83aaff;
+        --line: #30353d;
+        --success-bg: #193024;
+        --success-ink: #a9e3bd;
+        --danger-bg: #392222;
+        --danger-ink: #ffb4aa;
+        --radius: 12px;
+    }
+
+    html, body {
+        font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+        color: var(--ink);
+    }
+
+    .stApp, [data-testid="stAppViewContainer"] {
+        background: var(--page-bg);
+        color: var(--ink);
+    }
+
+    [data-testid="stHeader"], [data-testid="stToolbar"] {
+        background-color: var(--page-bg);
+    }
+
+    [data-testid="stMarkdownContainer"] {
+        color: var(--ink);
+    }
+
+    [data-testid="stSidebar"] {
+        background: var(--surface);
+        border-right: 1px solid var(--line);
+    }
+
+    [data-testid="stCaptionContainer"] {
+        color: var(--muted);
+    }
+
+    .block-container {
+        max-width: 1440px;
+        padding: 2.25rem 2.5rem 4rem;
+    }
+
+    .page-kicker {
+        color: var(--accent);
+        font-size: 0.8125rem;
+        font-weight: 650;
+        letter-spacing: 0.04em;
+        margin-bottom: 0.35rem;
+    }
+
+    h1, h2, h3 {
+        color: var(--ink);
+        letter-spacing: -0.025em;
+    }
+
+    [data-testid="stMetric"] {
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        padding: 1.1rem 1.2rem;
+        box-shadow: none;
+    }
+
+    [data-testid="stMetricLabel"] {
+        color: var(--muted);
+        font-size: 0.85rem;
+    }
+
+    [data-testid="stMetricValue"] {
+        color: var(--ink);
+        font-weight: 650;
+        letter-spacing: -0.03em;
+    }
+
+    [data-testid="stMetricDelta"] {
+        font-weight: 550;
+    }
+
+    [data-baseweb="tab-list"] {
+        gap: 1.5rem;
+        border-bottom: 1px solid var(--line);
+    }
+
+    [data-baseweb="tab"] {
+        color: var(--muted);
+        font-weight: 550;
+    }
+
+    [aria-selected="true"][data-baseweb="tab"] {
+        color: var(--accent);
+    }
+
+    [data-baseweb="tab-highlight"] {
+        background-color: var(--accent);
+    }
+
+    [data-testid="stDataFrame"], [data-testid="stDataEditor"] {
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        overflow: hidden;
+    }
+
+    [data-testid="stExpander"] {
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+    }
+
+    input, textarea, [data-baseweb="select"] > div {
+        background-color: var(--surface-raised);
+        color: var(--ink);
+        border-color: var(--line);
+    }
+
+    .stButton > button, .stDownloadButton > button {
+        border-radius: 8px;
+        font-weight: 550;
+        min-height: 2.75rem;
+        transition: transform 160ms ease, border-color 160ms ease, background-color 160ms ease;
+    }
+
+    .stButton > button:hover, .stDownloadButton > button:hover {
+        border-color: var(--accent);
+        transform: translateY(-2px);
+    }
+
+    @media (max-width: 700px) {
+        .block-container {
+            padding: 1.5rem 1rem 3rem;
+        }
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 try:
     verificar_integridade_banco()
     sincronizar_planilhas()
-except Exception as e:
-    st.error(f"❌ Erro ao conectar ou inicializar o banco de dados: {e}")
+except Exception as erro:
+    st.error(f"Não foi possível carregar os dados: {erro}")
     st.stop()
+
 
 @st.cache_data(ttl=60)
 def obter_dados_painel():
     return carregar_eventos(), obter_carteira_df(), obter_carteira_filiais_dict()
 
+
 df, df_carteira, dict_carteiras = obter_dados_painel()
 
+st.markdown('<div class="page-kicker">Operações · monitoramento</div>', unsafe_allow_html=True)
+st.title("Gestão de disparos")
+st.caption("Acompanhamento de eventos, metas por filial e recorrência de clientes.")
+
 if df is None or df.empty:
-    st.warning(" Banco de dados conectado, mas sem eventos gravados.")
-    if st.button(" Sincronizar Novamente"):
+    st.warning("O banco está disponível, mas ainda não há eventos para exibir.")
+    if st.button("Atualizar dados"):
         st.cache_data.clear()
         st.rerun()
     st.stop()
 
-# ================= DEFINIÇÕES DE TEMPORALIDADE =================
 hoje = date.today()
 ontem = hoje - timedelta(days=1)
-mes_atual_str = hoje.strftime("%Y-%m")
+mes_atual = hoje.strftime("%Y-%m")
 
-# ================= BARRA LATERAL (CONFIGURAÇÕES GLOBAIS) =================
-st.sidebar.header(" Modo de Operação")
-
-modo_visao = st.sidebar.radio(
-    "Selecione a Visão Desejada:",
-    [
-        " Fechamento Consolidado (D-1 & Metas)", 
-        " Plantão Hora a Hora (Hoje / Tempo Real)"
-    ],
-    index=0
-)
-
-st.sidebar.markdown("---")
-st.sidebar.header(" Filtros Gerais")
-
-if st.sidebar.button(" Atualizar Dados do Banco"):
-    st.cache_data.clear()
-    st.rerun()
-
-todas_filiais_disponiveis = sorted(df["empresa"].dropna().unique().tolist())
-filiais_carteira = df_carteira[df_carteira["tipo"] == "FILIAL"]["filial"].tolist() if not df_carteira.empty else []
-todas_opcoes_filiais = sorted(list(set(todas_filiais_disponiveis + filiais_carteira)))
-
-filiais_selecionadas = st.sidebar.multiselect(
-    "Filtrar Filiais:", 
-    options=todas_opcoes_filiais, 
-    default=todas_opcoes_filiais
-)
-
-todos_deptos = sorted(df["departamento"].dropna().unique().tolist())
-deptos_selecionados = st.sidebar.multiselect(
-    "Filtrar Departamentos:", 
-    options=todos_deptos, 
-    default=todos_deptos
-)
-
-with st.sidebar.expander(" Ajustar Base da Carteira"):
-    df_editado = st.data_editor(df_carteira, num_rows="dynamic", width="stretch")
-    if st.button("Salvar Carteira"):
-        salvar_carteira(df_editado)
+with st.sidebar:
+    st.header("Filtros")
+    if st.button("Atualizar dados", width="stretch"):
         st.cache_data.clear()
-        st.success("Carteira atualizada com sucesso.")
         st.rerun()
 
-# Filtragem Global dos Dados Base
-df_filtrado_global = df[
-    (df["empresa"].isin(filiais_selecionadas)) &
-    (df["departamento"].isin(deptos_selecionados))
+    empresas_disponiveis = sorted(df["empresa"].dropna().unique().tolist())
+    filiais_carteira = (
+        df_carteira.loc[df_carteira["tipo"] == "FILIAL", "filial"].tolist()
+        if not df_carteira.empty
+        else []
+    )
+    opcoes_filiais = sorted(set(empresas_disponiveis + filiais_carteira))
+    filiais_selecionadas = st.multiselect(
+        "Filiais",
+        options=opcoes_filiais,
+        default=opcoes_filiais,
+    )
+
+    departamentos_disponiveis = sorted(
+        df["departamento"].dropna().unique().tolist()
+    )
+    departamentos_selecionados = st.multiselect(
+        "Departamentos",
+        options=departamentos_disponiveis,
+        default=departamentos_disponiveis,
+    )
+
+    st.divider()
+    st.subheader("Base de clientes")
+    with st.expander("Ajustar carteira"):
+        carteira_editada = st.data_editor(
+            df_carteira,
+            num_rows="dynamic",
+            hide_index=True,
+            width="stretch",
+            column_config={
+                "filial": st.column_config.TextColumn("FILIAL", width="large"),
+                "clientes": st.column_config.NumberColumn(
+                    "CLIENTES", min_value=0, step=1, format="%d"
+                ),
+                "tipo": st.column_config.TextColumn("TIPO", width="medium"),
+            },
+        )
+        if st.button("Salvar carteira", type="primary", width="stretch"):
+            salvar_carteira(carteira_editada)
+            st.cache_data.clear()
+            st.success("Carteira atualizada.")
+            st.rerun()
+
+df_filtrado = df[
+    df["empresa"].isin(filiais_selecionadas)
+    & df["departamento"].isin(departamentos_selecionados)
 ].copy()
 
-if df_filtrado_global.empty:
-    st.info(" Nenhum registro encontrado para a combinação de filtros selecionada.")
-    st.stop()
+historico_label = "Todo o histórico"
+meses_disponiveis = sorted(
+    df_filtrado["ano_mes"].dropna().unique().tolist(), reverse=True
+)
+opcoes_periodo = [historico_label, *meses_disponiveis]
 
-
-# ==============================================================================
-# MODO 1: VISÃO DE FECHAMENTO CONSOLIDADO (D-1 E METAS)
-# ==============================================================================
-if modo_visao == " Fechamento Consolidado (D-1 & Metas)":
-    
-    st.title(" Gestão de Metas e Fechamento Consolidado (D-1)")
-    
-    col_sel_mes, col_info_periodo = st.columns([2, 3])
-    
-    meses_disponiveis = sorted(df_filtrado_global["ano_mes"].dropna().unique().tolist(), reverse=True)
-    opcoes_competencia = ["Todos os Meses (Visao Historica)"] + meses_disponiveis
-    
-    mes_selecionado = col_sel_mes.selectbox(
-        "Competência (Mês/Ano):", 
-        opcoes_competencia, 
-        index=1 if len(opcoes_competencia) > 1 else 0
+with st.sidebar:
+    periodo = st.selectbox(
+        "Período",
+        options=opcoes_periodo,
+        index=opcoes_periodo.index(mes_atual) if mes_atual in opcoes_periodo else 0,
     )
 
-    if mes_selecionado == "Todos os Meses (Visao Historica)":
-        df_fechamento = df_filtrado_global[df_filtrado_global["data_evento"] <= ontem].copy()
-        modo_historico = True
-        dias_decorridos = max(df_fechamento["data_evento"].nunique(), 1)
-        dias_totais_mes = dias_decorridos
-        texto_periodo = f"Consolidado Histórico Geral (até {ontem.strftime('%d/%m/%Y')})"
-    else:
-        df_mes = df_filtrado_global[df_filtrado_global["ano_mes"] == mes_selecionado].copy()
-        ano_sel, mes_sel = map(int, mes_selecionado.split("-"))
-        dias_totais_mes = calendar.monthrange(ano_sel, mes_sel)[1]
-        
-        if mes_selecionado == mes_atual_str:
-            # Mês em andamento: usa estritamente até ontem (D-1)
-            df_fechamento = df_mes[df_mes["data_evento"] <= ontem].copy()
-            modo_historico = False
-            dias_decorridos = max(ontem.day, 1) if hoje.month == mes_sel else dias_totais_mes
-            texto_periodo = f"Mês em Andamento ({mes_selecionado}) - Dias Fechados: Dia 1 até Dia {dias_decorridos} de {dias_totais_mes}"
-        else:
-            # Mês anterior completamente fechado
-            df_fechamento = df_mes.copy()
-            modo_historico = False
-            dias_decorridos = dias_totais_mes
-            texto_periodo = f"Mês Fechado ({mes_selecionado}) - Total de {dias_totais_mes} dias"
+if periodo == historico_label:
+    df_fechamento = df_filtrado[df_filtrado["data_evento"] <= ontem].copy()
+    modo_historico = True
+    dias_decorridos = max(df_fechamento["data_evento"].nunique(), 1)
+    dias_totais_mes = dias_decorridos
+    descricao_periodo = f"Histórico até {ontem.strftime('%d/%m/%Y')}"
+else:
+    df_mes = df_filtrado[df_filtrado["ano_mes"] == periodo].copy()
+    ano_selecionado, mes_selecionado = map(int, periodo.split("-"))
+    dias_totais_mes = calendar.monthrange(ano_selecionado, mes_selecionado)[1]
+    modo_historico = False
 
-    col_info_periodo.info(f" **Período de Análise:** {texto_periodo}")
-
-    # Segmentação Smart vs Outros
-    df_smart_fechamento = df_fechamento[df_fechamento["departamento"].str.upper().str.contains("SMART", na=False)]
-    df_outros_fechamento = df_fechamento[~df_fechamento["departamento"].str.upper().str.contains("SMART", na=False)]
-
-    base_clientes_smart = sum(dict_carteiras.get(f, 0) for f in filiais_selecionadas if f in filiais_carteira)
-    total_disparos_smart = len(df_smart_fechamento)
-    total_disparos_geral = len(df_fechamento)
-
-    media_smart_dia = total_disparos_smart / dias_decorridos if dias_decorridos > 0 else 0.0
-    taxa_smart_real = round(total_disparos_smart / base_clientes_smart, 2) if base_clientes_smart > 0 else 0.0
-    taxa_smart_prev = round((media_smart_dia * dias_totais_mes) / base_clientes_smart, 2) if base_clientes_smart > 0 else 0.0
-
-    # Cards Principais
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Base Clientes SMART", f"{base_clientes_smart:,}")
-    c2.metric("Disparos SMART (D-1)", f"{total_disparos_smart:,}")
-    c3.metric("Total Geral (Com Cabeado)", f"{total_disparos_geral:,}")
-    c4.metric("Taxa Real SMART", f"{taxa_smart_real:.2f}")
-    c5.metric(
-        "Taxa Prevista SMART",
-        f"{taxa_smart_prev:.2f}",
-        delta=f"{round(taxa_smart_prev - 1.55, 2)} vs Meta 1.55" if not modo_historico else None,
-        delta_color="inverse"
-    )
-
-    st.markdown("---")
-
-    # Sub-abas da visão de Fechamento
-    tab_filiais, tab_tratativas = st.tabs([
-        " Metas & Projeções por Filial", 
-        " Central de Tratativas & Pareto (Top 80%)"
-    ])
-
-    with tab_filiais:
-        st.subheader("Tabela de Metas e Saldos por Filial (Smart Alarm)")
-        tabela_filiais_calc = calcular_metricas_filiais(
-            df_smart_fechamento, filiais_selecionadas, dict_carteiras, 
-            dias_decorridos, dias_totais_mes, modo_historico
+    if periodo == mes_atual:
+        df_fechamento = df_mes[df_mes["data_evento"] <= ontem].copy()
+        dias_decorridos = max(ontem.day, 1)
+        descricao_periodo = (
+            f"{periodo} · dados fechados até {ontem.strftime('%d/%m/%Y')}"
         )
-        st.dataframe(tabela_filiais_calc, width="stretch")
+    else:
+        df_fechamento = df_mes
+        dias_decorridos = dias_totais_mes
+        descricao_periodo = f"{periodo} · mês encerrado"
 
-    with tab_tratativas:
-        mes_consulta = mes_selecionado if mes_selecionado != "Todos os Meses (Visao Historica)" else mes_atual_str
-        df_tratativas = carregar_tratativas(mes_consulta)
+mascara_smart = df_fechamento["departamento"].str.upper().str.contains(
+    "SMART", na=False
+)
+df_smart = df_fechamento[mascara_smart]
+df_outros = df_fechamento[~mascara_smart]
 
-        clientes_smart = processar_reincidencia_clientes(df_smart_fechamento, df_tratativas)
-        clientes_outros = processar_reincidencia_clientes(df_outros_fechamento, df_tratativas)
-        clientes_geral = processar_reincidencia_clientes(df_fechamento, df_tratativas)
+st.caption(f"Período analisado: {descricao_periodo}")
 
-        with st.expander(" Registrar / Atualizar Tratativa de Cliente", expanded=False):
-            opcoes_clientes = clientes_geral.apply(
-                lambda r: f"{r['CHAVE_CLIENTE']} | {r['RAZAO_SOCIAL']} ({r['TOTAL_DISPAROS']} disp) - [{r['CRITICIDADE_PARETO']}]", axis=1
-            ).tolist() if not clientes_geral.empty else []
+tab_visao, tab_pareto, tab_plantao = st.tabs(
+    ["Visão geral de filiais", "Reincidência e Pareto", "Monitoramento"]
+)
 
-            if opcoes_clientes:
-                col_c1, col_c2 = st.columns([2, 1])
-                cliente_sel_str = col_c1.selectbox("Selecione o Cliente:", opcoes_clientes)
-                chave_selecionada = cliente_sel_str.split(" | ")[0].strip()
+with tab_visao:
+    base_clientes_smart = sum(
+        dict_carteiras.get(filial, 0)
+        for filial in filiais_selecionadas
+        if filial in filiais_carteira
+    )
+    total_smart = len(df_smart)
+    total_geral = len(df_fechamento)
+    media_smart_dia = (
+        total_smart / dias_decorridos if dias_decorridos > 0 else 0.0
+    )
+    taxa_smart_real = (
+        round(total_smart / base_clientes_smart, 2)
+        if base_clientes_smart > 0
+        else 0.0
+    )
+    taxa_smart_prevista = (
+        round((media_smart_dia * dias_totais_mes) / base_clientes_smart, 2)
+        if base_clientes_smart > 0
+        else 0.0
+    )
 
-                dados_cliente = clientes_geral[clientes_geral["CHAVE_CLIENTE"] == chave_selecionada].iloc[0]
+    st.subheader("Resumo operacional")
+    metrica_base, metrica_smart, metrica_total = st.columns(3)
+    metrica_base.metric("Base de clientes SMART", f"{base_clientes_smart:,}")
+    metrica_smart.metric("Disparos SMART", f"{total_smart:,}")
+    metrica_total.metric("Disparos totais", f"{total_geral:,}")
+    metrica_real, metrica_prev = st.columns(2)
+    metrica_real.metric("Taxa SMART atual", f"{taxa_smart_real:.2f}")
+    metrica_prev.metric(
+        "Projeção SMART",
+        f"{taxa_smart_prevista:.2f}",
+        delta=(
+            f"{taxa_smart_prevista - 1.55:+.2f} vs. meta 1,55"
+            if not modo_historico
+            else None
+        ),
+        delta_color="inverse",
+    )
 
-                col_f1, col_f2, col_f3 = st.columns(3)
-                lista_status = [
-                    "Pendente / Triagem",
-                    "Contato com Cliente Realizado",
-                    "Ordem de Serviço (OS) de Manutenção Aberta",
-                    "Mau Uso Orientado",
-                    "Concluído / Resolvido"
-                ]
-                status_atual = dados_cliente["STATUS_TRATATIVA"] if dados_cliente["STATUS_TRATATIVA"] in lista_status else "Pendente / Triagem"
-                idx_status = lista_status.index(status_atual)
+    st.divider()
+    st.subheader("Metas e projeções por filial")
+    st.caption(
+        "Comparação entre o volume projetado no período e o teto definido para cada filial."
+    )
 
-                novo_status = col_f1.selectbox("Status Operacional:", lista_status, index=idx_status)
-                responsavel_val = col_f2.text_input("Operador / Responsável:", value=dados_cliente["RESPONSAVEL"] or "")
-                obs_val = col_f3.text_area("Anotação / Nº da OS / Motivo:", value=dados_cliente["OBSERVACAO"] or "", height=80)
+    metricas_filiais = calcular_metricas_filiais(
+        df_smart,
+        filiais_selecionadas,
+        dict_carteiras,
+        dias_decorridos,
+        dias_totais_mes,
+        modo_historico,
+    )
+    if metricas_filiais.empty:
+        st.info("Selecione ao menos uma filial para calcular as métricas.")
+    else:
+        metricas_exibicao = metricas_filiais.copy()
+        metricas_exibicao["STATUS"] = metricas_exibicao["STATUS"].map(
+            {
+                "Dentro da Meta": "🟢 Dentro da meta",
+                "Fora da Meta": "🔴 Acima da meta",
+            }
+        )
+        estilo_metricas = metricas_exibicao.style.apply(
+            lambda linha: [
+                (
+                    "background-color: #193024; color: #a9e3bd; font-weight: 600"
+                    if linha["STATUS"] == "🟢 Dentro da meta"
+                    else "background-color: #392222; color: #ffb4aa; font-weight: 600"
+                )
+                if coluna == "STATUS"
+                else ""
+                for coluna in linha.index
+            ],
+            axis=1,
+        )
+        estilo_metricas = estilo_metricas.format(
+            {
+                "CLIENTES": "{:,.0f}",
+                "DISPAROS": "{:,.0f}",
+                "MEDIA": "{:,.1f}",
+                "PREVISAO": "{:,.0f}",
+                "TETO": "{:,.0f}",
+                "SALDO": "{:+,.0f}",
+                "TAXA ATUAL": "{:.2f}",
+                "TAXA PREV": "{:.2f}",
+            }
+        )
+        st.dataframe(
+            estilo_metricas,
+            hide_index=True,
+            width="stretch",
+            column_config={
+                "FILIAIS": st.column_config.TextColumn("FILIAL", width="large"),
+                "CLIENTES": st.column_config.NumberColumn("CLIENTES", format="%d"),
+                "DISPAROS": st.column_config.NumberColumn("DISPAROS", format="%d"),
+                "MEDIA": st.column_config.NumberColumn("MÉDIA/DIA", format="%.1f"),
+                "PREVISAO": st.column_config.NumberColumn("PROJEÇÃO", format="%d"),
+                "TETO": st.column_config.NumberColumn("TETO", format="%d"),
+                "SALDO": st.column_config.NumberColumn("SALDO", format="%+d"),
+                "TAXA ATUAL": st.column_config.NumberColumn(
+                    "TAXA ATUAL", format="%.2f"
+                ),
+                "TAXA PREV": st.column_config.NumberColumn(
+                    "TAXA PROJETADA", format="%.2f"
+                ),
+                "STATUS": st.column_config.TextColumn("STATUS", width="medium"),
+            },
+        )
 
-                if st.button(" Gravar Tratativa", type="primary"):
-                    salvar_tratativa(
-                        chave_cliente=chave_selecionada,
-                        ano_mes=mes_consulta,
-                        status=novo_status,
-                        responsavel=responsavel_val.strip(),
-                        observacao=obs_val.strip()
-                    )
-                    st.cache_data.clear()
-                    st.success(f"Tratativa de {chave_selecionada} salva!")
-                    st.rerun()
+        grafico_filiais = px.bar(
+            metricas_filiais.sort_values("PREVISAO"),
+            x="PREVISAO",
+            y="FILIAIS",
+            color="STATUS",
+            orientation="h",
+            barmode="group",
+            color_discrete_map={
+                "Dentro da Meta": "#83aaff",
+                "Fora da Meta": "#ff8178",
+            },
+            labels={
+                "PREVISAO": "Disparos projetados",
+                "FILIAIS": "",
+                "STATUS": "Consumo",
+            },
+        )
+        grafico_filiais.update_layout(
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            font={"family": "system-ui, sans-serif", "color": "#f1f3f5"},
+            margin={"l": 8, "r": 16, "t": 12, "b": 8},
+            legend={"orientation": "h", "y": 1.08, "x": 0},
+            xaxis={
+                "showgrid": True,
+                "gridcolor": "#30353d",
+                "zeroline": False,
+                "title": "Disparos projetados",
+            },
+            yaxis={"showgrid": False, "title": ""},
+        )
+        st.plotly_chart(grafico_filiais, width="stretch")
 
-        def renderizar_tabela_e_exportacao(dataframe, nome_aba):
-            st.dataframe(dataframe, width="stretch")
-            if not dataframe.empty:
-                buffer = io.BytesIO()
-                with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-                    dataframe.to_excel(writer, index=False, sheet_name=nome_aba[:31])
-                st.download_button(
-                    label=f" Baixar Relatório {nome_aba} (Excel)",
-                    data=buffer.getvalue(),
-                    file_name=f"relatorio_{nome_aba.lower()}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    key=f"btn_dl_{nome_aba}"
+    with st.expander("Taxa de disparos por carteira", expanded=False):
+        st.caption(
+            "Disparos do período selecionado por cliente da carteira. "
+            "As unidades paulistas são consolidadas em SP."
+        )
+        taxas_carteira = calcular_taxa_por_carteira(
+            df_fechamento,
+            df_carteira,
+            normalizar_nome_filial,
+        )
+        st.dataframe(
+            taxas_carteira,
+            hide_index=True,
+            width="stretch",
+            column_config={
+                "FILIAL": st.column_config.TextColumn("FILIAL", width="large"),
+                "CLIENTES": st.column_config.NumberColumn("CLIENTES", format="%d"),
+                "DISPAROS": st.column_config.NumberColumn("DISPAROS", format="%d"),
+                "TAXA": st.column_config.NumberColumn("DISPAROS / CLIENTE", format="%.4f"),
+                "SEM_CARTEIRA": st.column_config.CheckboxColumn(
+                    "SEM CORRESPONDÊNCIA NA CARTEIRA"
+                ),
+            },
+        )
+        sem_carteira = taxas_carteira.loc[taxas_carteira["SEM_CARTEIRA"]]
+        if not sem_carteira.empty:
+            st.warning(
+                f"{len(sem_carteira)} empresa(s)/filial(is) sem correspondência "
+                "na carteira."
+            )
+
+with tab_pareto:
+    st.subheader("Clientes com reincidência")
+    st.caption(
+        "Disparos agrupados por cliente. A classificação crítica cobre a faixa acumulada até 80%."
+    )
+    st.caption(
+        "COD exibe os quatro primeiros caracteres alfanuméricos; CONTRATO exibe o trecho após _."
+    )
+
+    clientes_smart = processar_reincidencia_clientes(df_smart)
+    clientes_outros = processar_reincidencia_clientes(df_outros)
+    clientes_todos = processar_reincidencia_clientes(df_fechamento)
+
+    def renderizar_clientes(dataframe, nome_arquivo, titulo_aba):
+        if dataframe.empty:
+            st.info("Não há eventos para este recorte no período selecionado.")
+            return
+
+        colunas = [
+            "CHAVE_CLIENTE",
+            "RAZAO_SOCIAL",
+            "EMPRESA",
+            "DEPARTAMENTO",
+            "TOTAL_DISPAROS",
+            "DIAS_DISTINTOS",
+            "CRITICIDADE_PARETO",
+        ]
+        dados_exibicao = incluir_cod_contrato(dataframe.loc[:, colunas])
+        dados_exibicao = dados_exibicao.rename(
+            columns={
+                "RAZAO_SOCIAL": "CLIENTE",
+                "EMPRESA": "FILIAL",
+                "TOTAL_DISPAROS": "DISPAROS",
+                "DIAS_DISTINTOS": "DIAS ATIVOS",
+                "CRITICIDADE_PARETO": "PARETO",
+            }
+        )
+        dados_exibicao = dados_exibicao.loc[
+            :,
+            [
+                "COD",
+                "CONTRATO",
+                "CLIENTE",
+                "FILIAL",
+                "DEPARTAMENTO",
+                "DISPAROS",
+                "DIAS ATIVOS",
+                "PARETO",
+            ],
+        ]
+        estilo = dados_exibicao.style.apply(
+            lambda linha: [
+                (
+                    "background-color: #392222; color: #ffb4aa; font-weight: 600"
+                    if linha["PARETO"] == "🟥 Crítico"
+                    else "background-color: #24282e; color: #d3d8e0"
+                )
+                if coluna == "PARETO"
+                else ""
+                for coluna in linha.index
+            ],
+            axis=1,
+        )
+        st.dataframe(
+            estilo,
+            hide_index=True,
+            width="stretch",
+            column_config={
+                "COD": st.column_config.TextColumn("COD", width="small"),
+                "CONTRATO": st.column_config.TextColumn("CONTRATO", width="medium"),
+                "CLIENTE": st.column_config.TextColumn("CLIENTE", width="large"),
+                "FILIAL": st.column_config.TextColumn("FILIAL", width="medium"),
+                "DEPARTAMENTO": st.column_config.TextColumn(
+                    "DEPARTAMENTO", width="medium"
+                ),
+                "DISPAROS": st.column_config.NumberColumn("DISPAROS", format="%d"),
+                "DIAS ATIVOS": st.column_config.NumberColumn(
+                    "DIAS ATIVOS", format="%d"
+                ),
+                "PARETO": st.column_config.TextColumn("PARETO", width="medium"),
+            },
+        )
+
+        buffer = io.BytesIO()
+        with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+            dados_exibicao.to_excel(
+                writer,
+                index=False,
+                sheet_name=titulo_aba[:31],
+            )
+        st.download_button(
+            "Baixar relatório Excel",
+            data=buffer.getvalue(),
+            file_name=nome_arquivo,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key=f"download_{nome_arquivo}",
+        )
+
+    aba_smart, aba_outros, aba_todos = st.tabs(
+        [
+            f"SMART · {len(clientes_smart)}",
+            f"Outros · {len(clientes_outros)}",
+            f"Todos · {len(clientes_todos)}",
+        ]
+    )
+    with aba_smart:
+        renderizar_clientes(clientes_smart, "reincidencia_smart.xlsx", "SMART")
+    with aba_outros:
+        renderizar_clientes(clientes_outros, "reincidencia_outros.xlsx", "Outros")
+    with aba_todos:
+        renderizar_clientes(clientes_todos, "reincidencia_geral.xlsx", "Geral")
+
+    with st.expander("Indicadores complementares de recorrência", expanded=False):
+        st.caption(
+            "Indicadores complementares por chave do cliente; não reproduzem "
+            "a aba REINC nem substituem a classificação Pareto."
+        )
+        if st.checkbox(
+            "Calcular indicadores complementares",
+            value=False,
+            key="calcular_recorrencia_complementar",
+        ):
+            recorrencia = calcular_recorrencia_complementar(df_fechamento)
+            if recorrencia.empty:
+                st.info("Não há chaves de cliente válidas neste recorte.")
+            else:
+                st.dataframe(
+                    recorrencia,
+                    hide_index=True,
+                    width="stretch",
+                    column_config={
+                        "CHAVE_CLIENTE": st.column_config.TextColumn(
+                            "CHAVE DO CLIENTE", width="medium"
+                        ),
+                        "RAZAO_SOCIAL": st.column_config.TextColumn(
+                            "CLIENTE", width="large"
+                        ),
+                        "EMPRESA": st.column_config.TextColumn("FILIAL"),
+                        "DEPARTAMENTO": st.column_config.TextColumn("DEPARTAMENTO"),
+                        "TOTAL_DISPAROS": st.column_config.NumberColumn(
+                            "DISPAROS", format="%d"
+                        ),
+                        "DIAS_DISTINTOS": st.column_config.NumberColumn(
+                            "DIAS DISTINTOS", format="%d"
+                        ),
+                        "MESES_ATIVOS": st.column_config.NumberColumn(
+                            "MESES ATIVOS", format="%d"
+                        ),
+                        "MEDIA_DISPAROS_MES": st.column_config.NumberColumn(
+                            "MÉDIA / MÊS", format="%.2f"
+                        ),
+                        "MAX_DISPAROS_MES": st.column_config.NumberColumn(
+                            "MÁXIMO EM UM MÊS", format="%d"
+                        ),
+                    },
                 )
 
-        subtab_smart, subtab_outros, subtab_geral = st.tabs([
-            f"Smart Alarm ({len(clientes_smart)})",
-            f"Convencional / Outros ({len(clientes_outros)})",
-            f"Todos os Clientes ({len(clientes_geral)})"
-        ])
+with tab_plantao:
+    st.subheader("Monitoramento por dia e horário")
 
-        with subtab_smart:
-            renderizar_tabela_e_exportacao(clientes_smart, "Smart_Alarm")
+    datas_eventos = sorted(
+        pd.to_datetime(df_filtrado["data_evento"], errors="coerce")
+        .dropna()
+        .dt.date.unique()
+    )
 
-        with subtab_outros:
-            renderizar_tabela_e_exportacao(clientes_outros, "Outros_Contratos")
-
-        with subtab_geral:
-            renderizar_tabela_e_exportacao(clientes_geral, "Geral")
-
-
-# ==============================================================================
-# MODO 2: PLANTÃO HORA A HORA (HOJE / TEMPO REAL)
-# ==============================================================================
-else:
-    st.title(" Monitoramento de Plantão Hora a Hora (Hoje)")
-    
-    # Filtra estritamente a data atual (D-0)
-    df_hoje = df_filtrado_global[df_filtrado_global["data_evento"] == hoje].copy()
-
-    if df_hoje.empty:
-        st.warning(f" Nenhum evento registrado no banco para a data de hoje ({hoje.strftime('%d/%m/%Y')}).")
-        st.info("Assim que o coletor horário da API rodar ou uma nova planilha for inserida, os dados aparecerão aqui em tempo real.")
+    if not datas_eventos:
+        st.info("Não há datas de eventos disponíveis para os filtros selecionados.")
     else:
-        disp_hoje_total = len(df_hoje)
-        disp_hoje_smart = len(df_hoje[df_hoje["departamento"].str.upper().str.contains("SMART", na=False)])
-        contratos_hoje = df_hoje["chave_cliente"].nunique()
-        ultima_hora = df_hoje["hora_int"].max()
-
-        h1, h2, h3, h4 = st.columns(4)
-        h1.metric("Total de Disparos Hoje", f"{disp_hoje_total:,}")
-        h2.metric("Disparos Smart Alarm Hoje", f"{disp_hoje_smart:,}")
-        h3.metric("Contratos com Disparo Hoje", f"{contratos_hoje:,}")
-        h4.metric("Última Hora com Registro", f"{ultima_hora:02d}:00")
-
-        st.markdown("---")
-
-        col_g_esq, col_g_dir = st.columns([3, 2])
-
-        with col_g_esq:
-            st.subheader("Curva de Disparos de Hoje (Clique na barra para detalhar)")
-            disp_hora_hoje = df_hoje.groupby("hora_int")["id"].count().reset_index()
-            disp_hora_hoje.rename(columns={"id": "total_disparos"}, inplace=True)
-
-            fig_hoje = px.bar(
-                disp_hora_hoje,
-                x="hora_int",
-                y="total_disparos",
-                labels={"hora_int": "Hora do Dia (0-23h)", "total_disparos": "Disparos"},
-                color="total_disparos",
-                color_continuous_scale="Reds",
-                text="total_disparos"
+        data_padrao = hoje if hoje in datas_eventos else datas_eventos[-1]
+        coluna_data, coluna_inicio, coluna_fim = st.columns(3)
+        with coluna_data:
+            data_selecionada = st.date_input(
+                "Dia dos eventos",
+                value=data_padrao,
+                min_value=datas_eventos[0],
+                max_value=datas_eventos[-1],
+                format="DD/MM/YYYY",
+                key="monitoramento_data",
             )
-            fig_hoje.update_layout(
-                xaxis=dict(tickmode="linear", tick0=0, dtick=1),
-                clickmode="event+select",
-                dragmode="select",
-                margin=dict(l=10, r=10, t=30, b=10)
+        with coluna_inicio:
+            horario_inicio = st.time_input(
+                "A partir de",
+                value=time(8, 0),
+                key="monitoramento_horario_inicio",
             )
-            fig_hoje.update_traces(textposition="outside")
-
-            evento_hora_hoje = st.plotly_chart(
-                fig_hoje, 
-                width="stretch", 
-                on_select="rerun", 
-                selection_mode="points",
-                key="grafico_hoje_interativo"
+        with coluna_fim:
+            horario_fim = st.time_input(
+                "Até",
+                value=time(14, 0),
+                key="monitoramento_horario_fim",
             )
 
-        with col_g_dir:
-            st.subheader("Distribuição por Departamento (Hoje)")
-            disp_depto_hoje = df_hoje.groupby("departamento")["id"].count().reset_index()
-            fig_pie_hoje = px.pie(disp_depto_hoje, names="departamento", values="id", hole=0.4)
-            fig_pie_hoje.update_layout(margin=dict(l=10, r=10, t=30, b=10))
-            st.plotly_chart(fig_pie_hoje, width="stretch")
+        if horario_inicio > horario_fim:
+            st.warning("O horário final deve ser igual ou posterior ao inicial.")
+        else:
+            minutos_inicio = horario_inicio.hour * 60 + horario_inicio.minute
+            minutos_fim = horario_fim.hour * 60 + horario_fim.minute
+            datas_normalizadas = pd.to_datetime(
+                df_filtrado["data_evento"], errors="coerce"
+            ).dt.date
+            minutos_do_dia = pd.to_numeric(
+                df_filtrado["minuto_do_dia"], errors="coerce"
+            )
+            df_faixa = df_filtrado[
+                (datas_normalizadas == data_selecionada)
+                & minutos_do_dia.between(
+                    minutos_inicio, minutos_fim, inclusive="both"
+                )
+            ].copy()
 
-        st.markdown("---")
+            st.caption(
+                f"{data_selecionada.strftime('%d/%m/%Y')} · "
+                f"{horario_inicio.strftime('%H:%M')}–{horario_fim.strftime('%H:%M')}"
+            )
 
-        # Captura do clique ou seleção manual da hora
-        hora_clicada_hoje = None
-        if evento_hora_hoje and "selection" in evento_hora_hoje and "points" in evento_hora_hoje["selection"]:
-            pontos = evento_hora_hoje["selection"]["points"]
-            if pontos:
-                hora_clicada_hoje = pontos[0].get("x")
-
-        with st.container():
-            if hora_clicada_hoje is not None:
-                h_filtro = int(hora_clicada_hoje)
-                st.info(f" **Detalhamento da hora clicada:** Faixa das **{h_filtro:02d}:00 até {h_filtro:02d}:59** de Hoje")
+            if df_faixa.empty:
+                st.info("Não há eventos nessa data e faixa de horário.")
             else:
-                horas_disponiveis = sorted(df_hoje["hora_int"].dropna().unique().astype(int).tolist())
-                opcoes_h = ["Todas as Horas de Hoje"] + [f"{h:02d}:00" for h in horas_disponiveis]
-                h_manual = st.selectbox("Ou selecione uma hora específica de hoje para detalhar:", opcoes_h, index=0)
-                h_filtro = int(h_manual.split(":")[0]) if h_manual != "Todas as Horas de Hoje" else None
+                mascara_smart_faixa = df_faixa["departamento"].str.upper().str.contains(
+                    "SMART", na=False
+                )
+                total_faixa = len(df_faixa)
+                total_smart_faixa = int(mascara_smart_faixa.sum())
+                clientes_faixa = df_faixa["chave_cliente"].nunique()
+                ultima_hora = df_faixa["hora_int"].max()
 
-            if h_filtro is not None:
-                df_detalhe_hoje = df_hoje[df_hoje["hora_int"] == h_filtro]
+                col_total, col_smart, col_clientes, col_hora = st.columns(4)
+                col_total.metric("Disparos na faixa", f"{total_faixa:,}")
+                col_smart.metric("Disparos SMART", f"{total_smart_faixa:,}")
+                col_clientes.metric("Clientes distintos", f"{clientes_faixa:,}")
+                col_hora.metric("Último registro", f"{int(ultima_hora):02d}:00")
+
+                distribuicao_hora = (
+                    df_faixa.groupby("hora_int")["id"]
+                    .count()
+                    .rename("TOTAL_DISPAROS")
+                    .reset_index()
+                )
+                grafico_hora = px.bar(
+                    distribuicao_hora,
+                    x="hora_int",
+                    y="TOTAL_DISPAROS",
+                    labels={
+                        "hora_int": "Hora do dia",
+                        "TOTAL_DISPAROS": "Disparos",
+                    },
+                    color_discrete_sequence=["#83aaff"],
+                )
+                grafico_hora.update_layout(
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    plot_bgcolor="rgba(0,0,0,0)",
+                    font={"family": "system-ui, sans-serif", "color": "#f1f3f5"},
+                    margin={"l": 8, "r": 16, "t": 12, "b": 8},
+                    xaxis={
+                        "tickmode": "linear",
+                        "tick0": 0,
+                        "dtick": 1,
+                        "showgrid": False,
+                    },
+                    yaxis={
+                        "showgrid": True,
+                        "gridcolor": "#30353d",
+                        "title": "Disparos",
+                    },
+                )
+                distribuicao_departamento = (
+                    df_faixa.groupby("departamento")["id"]
+                    .count()
+                    .rename("TOTAL_DISPAROS")
+                    .reset_index()
+                )
+                grafico_departamento = px.pie(
+                    distribuicao_departamento,
+                    names="departamento",
+                    values="TOTAL_DISPAROS",
+                    hole=0.62,
+                    color_discrete_sequence=[
+                        "#83aaff",
+                        "#5f84d6",
+                        "#4766a6",
+                        "#34496f",
+                        "#273448",
+                    ],
+                    labels={
+                        "departamento": "Departamento",
+                        "TOTAL_DISPAROS": "Disparos",
+                    },
+                )
+                grafico_departamento.update_layout(
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    plot_bgcolor="rgba(0,0,0,0)",
+                    font={"family": "system-ui, sans-serif", "color": "#f1f3f5"},
+                    margin={"l": 8, "r": 16, "t": 12, "b": 8},
+                    legend={"orientation": "h", "y": -0.15},
+                )
+                grafico_departamento.update_traces(
+                    textfont={"color": "#f1f3f5"}
+                )
+
+                coluna_horas, coluna_departamentos = st.columns([3, 2])
+                with coluna_horas:
+                    st.subheader("Disparos por hora")
+                    st.plotly_chart(grafico_hora, width="stretch")
+                with coluna_departamentos:
+                    st.subheader("Distribuição por departamento")
+                    st.plotly_chart(grafico_departamento, width="stretch")
+
+                st.subheader("Clientes com mais disparos na faixa")
+                ranking = (
+                    df_faixa.groupby("chave_cliente", as_index=False)
+                    .agg(
+                        RAZAO_SOCIAL=("razao_social", "first"),
+                        EMPRESA=("empresa", "first"),
+                        DEPARTAMENTO=("departamento", "first"),
+                        DISPAROS=("id", "count"),
+                        PRIMEIRO_DISPARO=("hora_evento", "min"),
+                        ULTIMO_DISPARO=("hora_evento", "max"),
+                    )
+                    .sort_values("DISPAROS", ascending=False)
+                    .reset_index(drop=True)
+                    .rename(columns={"chave_cliente": "CHAVE_CLIENTE"})
+                )
+                ranking = incluir_cod_contrato(ranking).rename(
+                    columns={
+                        "RAZAO_SOCIAL": "CLIENTE",
+                        "EMPRESA": "FILIAL",
+                    }
+                )
+                ranking = ranking.loc[
+                    :,
+                    [
+                        "COD",
+                        "CONTRATO",
+                        "CLIENTE",
+                        "FILIAL",
+                        "DEPARTAMENTO",
+                        "DISPAROS",
+                        "PRIMEIRO_DISPARO",
+                        "ULTIMO_DISPARO",
+                    ],
+                ]
+                st.caption(
+                    "COD identifica o prefixo alfanumérico; CONTRATO mostra o trecho após _."
+                )
+                st.dataframe(
+                    ranking,
+                    hide_index=True,
+                    width="stretch",
+                    column_config={
+                        "COD": st.column_config.TextColumn("COD", width="small"),
+                        "CONTRATO": st.column_config.TextColumn(
+                            "CONTRATO", width="medium"
+                        ),
+                        "CLIENTE": st.column_config.TextColumn(
+                            "CLIENTE", width="large"
+                        ),
+                        "FILIAL": st.column_config.TextColumn("FILIAL", width="medium"),
+                        "DEPARTAMENTO": st.column_config.TextColumn(
+                            "DEPARTAMENTO", width="medium"
+                        ),
+                        "DISPAROS": st.column_config.NumberColumn(
+                            "DISPAROS", format="%d"
+                        ),
+                        "PRIMEIRO_DISPARO": st.column_config.TextColumn(
+                            "PRIMEIRO DISPARO", width="small"
+                        ),
+                        "ULTIMO_DISPARO": st.column_config.TextColumn(
+                            "ÚLTIMO DISPARO", width="small"
+                        ),
+                    },
+                )
+
+    with st.expander("Análises operacionais complementares", expanded=False):
+        st.caption(
+            "Distribuição por hora usa o período selecionado. Mau uso e limitador "
+            "consideram todo o histórico e não incluem filtro temporal."
+        )
+        if df_fechamento.empty:
+            st.info("Não há eventos no período selecionado.")
+        else:
+            eventos_sem_horario = pd.to_datetime(
+                df_fechamento["dt_hora"], errors="coerce"
+            ).isna().sum()
+            distribuicao_horaria = calcular_distribuicao_horaria(df_fechamento)
+            distribuicao_periodos = calcular_distribuicao_periodos(df_fechamento)
+            if eventos_sem_horario:
+                st.caption(
+                    f"{eventos_sem_horario} evento(s) sem data/hora foram excluídos "
+                    "da distribuição."
+                )
+
+            coluna_distribuicao, coluna_periodos = st.columns(2)
+            with coluna_distribuicao:
+                st.subheader("Disparos por hora")
+                st.plotly_chart(
+                    px.bar(
+                        distribuicao_horaria,
+                        x="HORA",
+                        y="DISPAROS",
+                        labels={"HORA": "Hora", "DISPAROS": "Disparos"},
+                    ),
+                    width="stretch",
+                )
+            with coluna_periodos:
+                st.subheader("Disparos por período")
+                st.plotly_chart(
+                    px.bar(
+                        distribuicao_periodos,
+                        x="PERIODO",
+                        y="DISPAROS",
+                        category_orders={"PERIODO": list(distribuicao_periodos["PERIODO"])},
+                        labels={"PERIODO": "Período", "DISPAROS": "Disparos"},
+                    ),
+                    width="stretch",
+                )
+
+        if st.checkbox(
+            "Calcular alertas de possível mau uso (todo o histórico)",
+            value=False,
+            key="calcular_possivel_mau_uso",
+        ):
+            alertas_mau_uso = detectar_possivel_mau_uso(df)
+            if alertas_mau_uso.empty:
+                st.info("Nenhum contrato atende à regra de possível mau uso.")
             else:
-                df_detalhe_hoje = df_hoje.copy()
+                st.dataframe(
+                    alertas_mau_uso,
+                    hide_index=True,
+                    width="stretch",
+                    column_config={
+                        "NUMERO_CONTRATO": st.column_config.TextColumn(
+                            "NÚMERO DO CONTRATO"
+                        ),
+                        "DISPAROS_ABERTURA_FECHAMENTO": st.column_config.NumberColumn(
+                            "ABERTURA + FECHAMENTO", format="%d"
+                        ),
+                        "DISPAROS_OUTROS_PERIODOS": st.column_config.NumberColumn(
+                            "OUTROS PERÍODOS", format="%d"
+                        ),
+                    },
+                )
 
-            clientes_ranking_hoje = df_detalhe_hoje.groupby("chave_cliente", as_index=False).agg(
-                RAZAO_SOCIAL=("razao_social", "first"),
-                EMPRESA=("empresa", "first"),
-                DEPARTAMENTO=("departamento", "first"),
-                DISPAROS_NO_PERIODO=("id", "count"),
-                PRIMEIRO_DISPARO=("hora_evento", "min"),
-                ULTIMO_DISPARO=("hora_evento", "max")
-            ).sort_values(by="DISPAROS_NO_PERIODO", ascending=False).reset_index(drop=True)
+        if st.checkbox(
+            "Calcular limitadores ativos (todo o histórico)",
+            value=False,
+            key="calcular_limitador",
+        ):
+            limitadores = detectar_limitador(df)
+            if limitadores.empty:
+                st.info("Nenhum agrupamento atende ao limite de cinco disparos.")
+            else:
+                st.dataframe(
+                    limitadores,
+                    hide_index=True,
+                    width="stretch",
+                    column_config={
+                        "NUMERO_CONTRATO": st.column_config.TextColumn(
+                            "NÚMERO DO CONTRATO"
+                        ),
+                        "DATA_EVENTO": st.column_config.DateColumn(
+                            "DATA DO EVENTO", format="DD/MM/YYYY"
+                        ),
+                        "HORA": st.column_config.NumberColumn("HORA", format="%02d"),
+                        "OCORRENCIAS": st.column_config.NumberColumn(
+                            "OCORRÊNCIAS", format="%d"
+                        ),
+                    },
+                )
 
-            txt_titulo = f"às **{h_filtro:02d}h**" if h_filtro is not None else "no **acumulado do dia de hoje**"
-            st.subheader(f" Ranking de Clientes com Disparos {txt_titulo} ({len(clientes_ranking_hoje)} contratos)")
-            st.dataframe(clientes_ranking_hoje, width="stretch")
+        if st.checkbox(
+            "Exibir comparação mensal detalhada (todo o histórico)",
+            value=False,
+            key="comparacao_mensal",
+        ):
+            comparacao_mensal = comparar_disparos_mensais(df_filtrado)
+            if comparacao_mensal.empty:
+                st.info("Não há eventos com mês válido para comparar.")
+            else:
+                st.dataframe(
+                    comparacao_mensal,
+                    hide_index=True,
+                    width="stretch",
+                    column_config={
+                        "ano_mes": st.column_config.TextColumn("ANO-MÊS"),
+                        "total_disparos": st.column_config.NumberColumn(
+                            "DISPAROS", format="%d"
+                        ),
+                    },
+                )

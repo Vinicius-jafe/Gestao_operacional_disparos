@@ -1,13 +1,15 @@
 #  Gestão Operacional de Disparos
 
-Painel web para acompanhamento e análise de **disparos de alarme** de uma operação de segurança eletrônica. A aplicação coleta eventos automaticamente a partir de uma API, armazena o histórico em PostgreSQL e disponibiliza dashboards interativos para identificar padrões, **reincidências** por cliente e distribuição por filial, e registrar as tratativas da equipe.
+Painel web para acompanhamento e análise de **disparos de alarme** de uma operação de segurança eletrônica. A aplicação coleta eventos automaticamente a partir de uma API, armazena o histórico em PostgreSQL e disponibiliza dashboards interativos para identificar padrões, **reincidências** por cliente e distribuição por filial.
 
 ##  Funcionalidades
 
 - **Coleta automática** de eventos via API, executada por um worker em segundo plano (`coletor-horario`)
 - **Dashboard interativo** com gráficos (Plotly) e tabelas (Pandas) filtráveis por empresa, departamento e período
 - **Análise por filial** com base na carteira de clientes de cada unidade e de núcleos especiais (Redes, Totens, Smart P, DGP, Manutenção Regional)
-- **Detecção de reincidência** por cliente/mês, com workflow de **tratativas** (status, responsável e observação)
+- **Detecção de reincidência** por cliente e análise de Pareto para priorização operacional
+- **Análises complementares** de distribuição por hora/faixa, recorrência mensal, comparação mensal e sinais de possível mau uso/limitador
+- **Taxa por carteira** com as unidades paulistas consolidadas em SP e identificação de empresas sem correspondência
 - **Importação de planilhas** (Excel) com controle de arquivos já processados via hash SHA-256, evitando duplicidade
 - **Execução 100% containerizada** com Docker Compose (app + worker + banco)
 
@@ -17,7 +19,7 @@ Painel web para acompanhamento e análise de **disparos de alarme** de uma opera
 |---|---|
 | Interface | [Streamlit](https://streamlit.io/), [Plotly](https://plotly.com/python/) |
 | Dados | Pandas, OpenPyXL, SQLAlchemy |
-| Banco de dados | PostgreSQL 15 (`psycopg2`) |
+| Banco de dados | PostgreSQL 15 (`psycopg`) |
 | Integração com API | HTTPX |
 | Infraestrutura | Docker, Docker Compose |
 | CI | Woodpecker CI (`.woodpecker.yml`) |
@@ -49,7 +51,6 @@ O `docker-compose.yml` sobe três serviços:
 | `disparos_eventos` | Eventos de disparo (contrato, cliente, empresa, departamento, data/hora e campos derivados como `ano_mes` e `final_de_semana`) |
 | `carteira_filiais` | Quantidade de clientes por filial/núcleo, usada para calcular proporções |
 | `arquivos_processados` | Controle de importações (nome, hash, status, linhas lidas/inseridas, erro) |
-| `tratativas_reincidencia` | Histórico de tratativas por cliente e mês (status, responsável, observação) |
 
 ##  Como executar
 
