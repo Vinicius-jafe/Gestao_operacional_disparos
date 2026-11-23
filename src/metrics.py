@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, time
 from typing import Callable
 
 import pandas as pd
@@ -51,6 +51,38 @@ PERIODOS_HORARIOS = (
 )
 
 
+def filtrar_por_janela_horaria(
+    df: pd.DataFrame,
+    horario_abertura: time = time(0, 0),
+    horario_fechamento: time = time(23, 59),
+) -> pd.DataFrame:
+    if not isinstance(df, pd.DataFrame):
+        raise TypeError("df deve ser um pandas.DataFrame")
+    if not isinstance(horario_abertura, time) or not isinstance(
+        horario_fechamento, time
+    ):
+        raise TypeError(
+            "horario_abertura e horario_fechamento devem ser datetime.time"
+        )
+
+    minutos_abertura = horario_abertura.hour * 60 + horario_abertura.minute
+    minutos_fechamento = horario_fechamento.hour * 60 + horario_fechamento.minute
+    if minutos_abertura == 0 and minutos_fechamento == 23 * 60 + 59:
+        return df.copy()
+    if "dt_hora" not in df.columns:
+        raise KeyError("Coluna obrigatória ausente: dt_hora")
+
+    dt_hora = pd.to_datetime(df["dt_hora"], errors="coerce")
+    minutos_evento = dt_hora.dt.hour * 60 + dt_hora.dt.minute
+    if minutos_abertura <= minutos_fechamento:
+        mascara = minutos_evento.between(minutos_abertura, minutos_fechamento)
+    else:
+        mascara = (minutos_evento >= minutos_abertura) | (
+            minutos_evento <= minutos_fechamento
+        )
+    return df.loc[mascara.fillna(False)].copy()
+
+
 def _deduplicar_eventos(df: pd.DataFrame) -> pd.DataFrame:
     if "id" in df.columns:
         return df.drop_duplicates(subset=["id"]).copy()
@@ -70,13 +102,63 @@ def classificar_faixa_horaria(hora_int: object) -> str | None:
         raise ValueError("hora_int deve estar entre 0 e 23")
     if hora < 6:
         return "Madrugada"
-    if hora < 10:
+    if hora < 9:
         return "Abertura"
     if hora < 18:
         return "Comercial"
     if hora < 22:
         return "Fechamento"
     return "Noite"
+
+
+def filtrar_por_periodos_horarios(
+    df: pd.DataFrame,
+    periodos_selecionados: list[str] | tuple[str, ...] = (),
+    modo: str = "qualquer",
+) -> pd.DataFrame:
+    if not isinstance(df, pd.DataFrame):
+        raise TypeError("df deve ser um pandas.DataFrame")
+    if modo not in {"qualquer", "todos"}:
+        raise ValueError("modo deve ser 'qualquer' ou 'todos'")
+    if not isinstance(periodos_selecionados, (list, tuple)):
+        raise TypeError("periodos_selecionados deve ser uma lista ou tupla")
+    periodos = list(dict.fromkeys(periodos_selecionados))
+    periodos_invalidos = set(periodos).difference(PERIODOS_HORARIOS)
+    if periodos_invalidos:
+        raise ValueError(
+            f"Períodos desconhecidos: {sorted(periodos_invalidos)}"
+        )
+    if not periodos:
+        return df.copy()
+    if "dt_hora" not in df.columns:
+        raise KeyError("Coluna obrigatória ausente: dt_hora")
+
+    dt_hora = pd.to_datetime(df["dt_hora"], errors="coerce")
+    minutos = dt_hora.dt.hour * 60 + dt_hora.dt.minute
+    faixas = {
+        "Madrugada": minutos < 6 * 60,
+        "Abertura": (minutos >= 6 * 60) & (minutos < 9 * 60),
+        "Comercial": (minutos >= 8 * 60) & (minutos < 18 * 60),
+        "Fechamento": (minutos >= 17 * 60) & (minutos < 22 * 60),
+        "Noite": minutos >= 22 * 60,
+    }
+    pertencimento = pd.DataFrame(
+        {periodo: faixas[periodo] for periodo in periodos},
+        index=df.index,
+    ).fillna(False)
+    mascara_periodo = pertencimento.any(axis=1)
+    if modo == "todos":
+        if "chave_cliente" not in df.columns:
+            raise KeyError("Coluna obrigatória ausente: chave_cliente")
+        presenca_por_cliente = pertencimento.groupby(
+            df["chave_cliente"], dropna=True
+        ).any()
+        clientes_qualificados = presenca_por_cliente.index[
+            presenca_por_cliente.all(axis=1)
+        ]
+        mascara_periodo &= df["chave_cliente"].isin(clientes_qualificados)
+
+    return df.loc[mascara_periodo].copy()
 
 
 def calcular_distribuicao_horaria(df: pd.DataFrame) -> pd.DataFrame:
@@ -103,15 +185,26 @@ def calcular_distribuicao_horaria(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def calcular_distribuicao_periodos(df: pd.DataFrame) -> pd.DataFrame:
-    distribuicao_horaria = calcular_distribuicao_horaria(df)
-    contagem_por_periodo = distribuicao_horaria.groupby("FAIXA_HORARIA")[
-        "DISPAROS"
-    ].sum()
+    if df is None or not isinstance(df, pd.DataFrame):
+        raise TypeError("df deve ser um pandas.DataFrame")
+    if "dt_hora" not in df.columns:
+        raise KeyError("Coluna obrigatória ausente: dt_hora")
+
+    base = _deduplicar_eventos(df)
+    minutos = pd.to_datetime(base["dt_hora"], errors="coerce")
+    minutos = minutos.dt.hour * 60 + minutos.dt.minute
+    faixas = {
+        "Madrugada": minutos < 6 * 60,
+        "Abertura": (minutos >= 6 * 60) & (minutos < 9 * 60),
+        "Comercial": (minutos >= 8 * 60) & (minutos < 18 * 60),
+        "Fechamento": (minutos >= 17 * 60) & (minutos < 22 * 60),
+        "Noite": minutos >= 22 * 60,
+    }
     return pd.DataFrame(
         [
             {
                 "PERIODO": periodo,
-                "DISPAROS": int(contagem_por_periodo.get(periodo, 0)),
+                "DISPAROS": int(faixas[periodo].sum()),
             }
             for periodo in PERIODOS_HORARIOS
         ],

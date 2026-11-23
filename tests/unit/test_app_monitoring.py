@@ -82,17 +82,24 @@ def test_monitoramento_filtra_data_e_intervalo_horario(monkeypatch):
         elemento for elemento in app.time_input if elemento.label == "Até"
     )
     seletor_fim.set_value(time(14, 0))
+    seletor_periodos = next(
+        elemento
+        for elemento in app.multiselect
+        if elemento.label == "Períodos incluídos"
+    )
+    seletor_periodos.set_value(["Abertura"])
     app.run()
 
     metricas = {elemento.label: elemento.value for elemento in app.metric}
-    assert metricas["Disparos na faixa"] == "2"
-    assert metricas["Disparos SMART"] == "2"
+    assert metricas["Disparos na faixa"] == "1"
+    assert metricas["Disparos SMART"] == "1"
 
     labels = {
         "Calcular indicadores complementares",
         "Calcular alertas de possível mau uso (todo o histórico)",
         "Calcular limitadores ativos (todo o histórico)",
         "Exibir comparação mensal detalhada (todo o histórico)",
+        "Calcular previsões mensais",
     }
     for label in labels:
         next(elemento for elemento in app.checkbox if elemento.label == label).set_value(

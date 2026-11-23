@@ -12,6 +12,7 @@ from src.metrics import (
     comparar_disparos_mensais,
     detectar_limitador,
     detectar_possivel_mau_uso,
+    filtrar_por_periodos_horarios,
 )
 
 
@@ -21,8 +22,8 @@ from src.metrics import (
         (0, "Madrugada"),
         (5, "Madrugada"),
         (6, "Abertura"),
-        (9, "Abertura"),
-        (10, "Comercial"),
+        (8, "Abertura"),
+        (9, "Comercial"),
         (17, "Comercial"),
         (18, "Fechamento"),
         (21, "Fechamento"),
@@ -62,6 +63,57 @@ def test_distribuicao_horaria_ignora_dt_hora_nulo_e_evento_duplicado():
     assert int(por_hora["DISPAROS"].sum()) == 2
     assert por_periodo.loc["Madrugada", "DISPAROS"] == 1
     assert por_periodo.loc["Abertura", "DISPAROS"] == 1
+
+
+def test_distribuicao_periodos_inclui_limites_sobrepostos():
+    eventos = pd.DataFrame(
+        {
+            "dt_hora": [
+                "2026-11-16 05:59",
+                "2026-11-16 06:00",
+                "2026-11-16 08:59",
+                "2026-11-16 09:00",
+                "2026-11-16 16:59",
+                "2026-11-16 17:00",
+                "2026-11-16 17:59",
+                "2026-11-16 18:00",
+                "2026-11-16 21:59",
+                "2026-11-16 22:00",
+                "2026-11-16 23:59",
+            ]
+        }
+    )
+
+    distribuicao = calcular_distribuicao_periodos(eventos).set_index("PERIODO")
+
+    assert distribuicao.loc["Madrugada", "DISPAROS"] == 1
+    assert distribuicao.loc["Abertura", "DISPAROS"] == 2
+    assert distribuicao.loc["Comercial", "DISPAROS"] == 5
+    assert distribuicao.loc["Fechamento", "DISPAROS"] == 4
+    assert distribuicao.loc["Noite", "DISPAROS"] == 2
+
+
+def test_filtrar_por_periodos_selecionados_usa_clientes_qualificados():
+    eventos = pd.DataFrame(
+        {
+            "id": [1, 2, 3, 4, 5],
+            "chave_cliente": ["cliente-a", "cliente-a", "cliente-b", "cliente-c", "cliente-d"],
+            "dt_hora": [
+                "2026-11-16 07:00",
+                "2026-11-16 18:00",
+                "2026-11-16 07:00",
+                "2026-11-16 18:00",
+                "2026-11-16 12:00",
+            ],
+        }
+    )
+    periodos = ["Abertura", "Fechamento"]
+
+    qualquer = filtrar_por_periodos_horarios(eventos, periodos)
+    todos = filtrar_por_periodos_horarios(eventos, periodos, modo="todos")
+
+    assert qualquer["id"].tolist() == [1, 2, 3, 4]
+    assert todos["id"].tolist() == [1, 2]
 
 
 def _eventos_contrato(rows):

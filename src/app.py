@@ -17,6 +17,7 @@ from src.database import (
     verificar_integridade_banco,
 )
 from src.metrics import (
+    PERIODOS_HORARIOS,
     calcular_distribuicao_horaria,
     calcular_distribuicao_periodos,
     calcular_metricas_filiais,
@@ -25,10 +26,12 @@ from src.metrics import (
     comparar_disparos_mensais,
     detectar_limitador,
     detectar_possivel_mau_uso,
+    filtrar_por_periodos_horarios,
     preparar_serie_diaria,
     processar_reincidencia_clientes,
 )
 from src.presentation import incluir_cod_contrato
+from src.prediction import calcular_previsoes
 
 
 st.set_page_config(
@@ -295,6 +298,26 @@ with st.sidebar:
         options=opcoes_periodo,
         index=opcoes_periodo.index(mes_atual) if mes_atual in opcoes_periodo else 0,
     )
+    st.subheader("Faixa horária das análises")
+    periodos_selecionados = st.multiselect(
+        "Períodos incluídos",
+        options=list(PERIODOS_HORARIOS),
+        default=[],
+        key="periodos_horarios",
+    )
+    modo_periodos = "qualquer"
+    if len(periodos_selecionados) > 1:
+        criterio_periodos = st.radio(
+            "Clientes com disparos em",
+            options=[
+                "Qualquer período selecionado",
+                "Todos os períodos selecionados",
+            ],
+            horizontal=True,
+            key="criterio_periodos_horarios",
+        )
+        if criterio_periodos == "Todos os períodos selecionados":
+            modo_periodos = "todos"
 
 if periodo == historico_label:
     df_fechamento = df_filtrado[df_filtrado["data_evento"] <= ontem].copy()
@@ -327,12 +350,13 @@ df_outros = df_fechamento[~mascara_smart]
 
 st.caption(f"Período analisado: {descricao_periodo}")
 
-tab_visao, tab_pareto, tab_plantao, tab_acompanhamento = st.tabs(
+tab_visao, tab_pareto, tab_plantao, tab_acompanhamento, tab_previsao = st.tabs(
     [
         "Visão geral de filiais",
         "Reincidência e Pareto",
         "Monitoramento",
         "Acompanhamento",
+        "Previsões",
     ]
 )
 
@@ -672,7 +696,7 @@ with tab_plantao:
     st.subheader("Monitoramento por dia e horário")
 
     datas_eventos = sorted(
-        pd.to_datetime(df_filtrado["data_evento"], errors="coerce")
+        pd.to_datetime(df_fechamento["data_evento"], errors="coerce")
         .dropna()
         .dt.date.unique()
     )
@@ -710,21 +734,32 @@ with tab_plantao:
             minutos_inicio = horario_inicio.hour * 60 + horario_inicio.minute
             minutos_fim = horario_fim.hour * 60 + horario_fim.minute
             datas_normalizadas = pd.to_datetime(
-                df_filtrado["data_evento"], errors="coerce"
+                df_fechamento["data_evento"], errors="coerce"
             ).dt.date
             minutos_do_dia = pd.to_numeric(
-                df_filtrado["minuto_do_dia"], errors="coerce"
+                df_fechamento["minuto_do_dia"], errors="coerce"
             )
-            df_faixa = df_filtrado[
+            df_faixa = df_fechamento[
                 (datas_normalizadas == data_selecionada)
                 & minutos_do_dia.between(
                     minutos_inicio, minutos_fim, inclusive="both"
                 )
             ].copy()
+            df_faixa = filtrar_por_periodos_horarios(
+                df_faixa,
+                periodos_selecionados=periodos_selecionados,
+                modo=modo_periodos,
+            )
 
+            descricao_filtro = (
+                ", ".join(periodos_selecionados)
+                if periodos_selecionados
+                else "todos os períodos"
+            )
             st.caption(
                 f"{data_selecionada.strftime('%d/%m/%Y')} · "
-                f"{horario_inicio.strftime('%H:%M')}–{horario_fim.strftime('%H:%M')}"
+                f"{horario_inicio.strftime('%H:%M')}–{horario_fim.strftime('%H:%M')} · "
+                f"períodos: {descricao_filtro}"
             )
 
             if df_faixa.empty:
@@ -886,47 +921,62 @@ with tab_plantao:
 
     with st.expander("Análises operacionais complementares", expanded=False):
         st.caption(
-            "Distribuição por hora usa o período selecionado. Mau uso e limitador "
-            "consideram todo o histórico e não incluem filtro temporal."
+            "Disparos por hora, por período e previsões respeitam o período e os "
+            "períodos horários da barra lateral. Mau uso e limitador consideram todo "
+            "o histórico, sem esses filtros."
         )
         if df_fechamento.empty:
             st.info("Não há eventos no período selecionado.")
         else:
+            df_fechamento_horario = filtrar_por_periodos_horarios(
+                df_fechamento,
+                periodos_selecionados=periodos_selecionados,
+                modo=modo_periodos,
+            )
             eventos_sem_horario = pd.to_datetime(
                 df_fechamento["dt_hora"], errors="coerce"
             ).isna().sum()
-            distribuicao_horaria = calcular_distribuicao_horaria(df_fechamento)
-            distribuicao_periodos = calcular_distribuicao_periodos(df_fechamento)
             if eventos_sem_horario:
                 st.caption(
                     f"{eventos_sem_horario} evento(s) sem data/hora foram excluídos "
                     "da distribuição."
                 )
 
-            coluna_distribuicao, coluna_periodos = st.columns(2)
-            with coluna_distribuicao:
-                st.subheader("Disparos por hora")
-                st.plotly_chart(
-                    px.bar(
-                        distribuicao_horaria,
-                        x="HORA",
-                        y="DISPAROS",
-                        labels={"HORA": "Hora", "DISPAROS": "Disparos"},
-                    ),
-                    width="stretch",
+            if df_fechamento_horario.empty:
+                st.info("Não há eventos nos períodos selecionados.")
+            else:
+                distribuicao_horaria = calcular_distribuicao_horaria(
+                    df_fechamento_horario
                 )
-            with coluna_periodos:
-                st.subheader("Disparos por período")
-                st.plotly_chart(
-                    px.bar(
-                        distribuicao_periodos,
-                        x="PERIODO",
-                        y="DISPAROS",
-                        category_orders={"PERIODO": list(distribuicao_periodos["PERIODO"])},
-                        labels={"PERIODO": "Período", "DISPAROS": "Disparos"},
-                    ),
-                    width="stretch",
+                distribuicao_periodos = calcular_distribuicao_periodos(
+                    df_fechamento_horario
                 )
+                coluna_distribuicao, coluna_periodos = st.columns(2)
+                with coluna_distribuicao:
+                    st.subheader("Disparos por hora")
+                    st.plotly_chart(
+                        px.bar(
+                            distribuicao_horaria,
+                            x="HORA",
+                            y="DISPAROS",
+                            labels={"HORA": "Hora", "DISPAROS": "Disparos"},
+                        ),
+                        width="stretch",
+                    )
+                with coluna_periodos:
+                    st.subheader("Disparos por período")
+                    st.plotly_chart(
+                        px.bar(
+                            distribuicao_periodos,
+                            x="PERIODO",
+                            y="DISPAROS",
+                            category_orders={
+                                "PERIODO": list(distribuicao_periodos["PERIODO"])
+                            },
+                            labels={"PERIODO": "Período", "DISPAROS": "Disparos"},
+                        ),
+                        width="stretch",
+                    )
 
         if st.checkbox(
             "Calcular alertas de possível mau uso (todo o histórico)",
@@ -1001,6 +1051,57 @@ with tab_plantao:
                         ),
                     },
                 )
+
+with tab_previsao:
+    st.subheader("Previsão mensal por cliente")
+    st.caption(
+        "Usa os três meses fechados anteriores e os dados do mês atual até ontem. "
+        "A severidade considera o volume de disparos do mês atual e os períodos "
+        "selecionados na barra lateral."
+    )
+    if st.checkbox(
+        "Calcular previsões mensais",
+        value=False,
+        key="calcular_previsoes_mensais",
+    ):
+        previsoes = calcular_previsoes(
+            df_filtrado,
+            hoje,
+            periodos_selecionados=periodos_selecionados,
+            modo_periodos=modo_periodos,
+        )
+        if previsoes.empty:
+            st.info("Não há eventos no intervalo necessário para calcular previsões.")
+        else:
+            st.dataframe(
+                previsoes,
+                hide_index=True,
+                width="stretch",
+                column_config={
+                    "K_CLASSIFICACAO": st.column_config.TextColumn("SEVERIDADE"),
+                    "L_MEDIA_DIARIA_HISTORICA": st.column_config.NumberColumn(
+                        "MÉDIA DIÁRIA HISTÓRICA", format="%.2f"
+                    ),
+                    "M_TAXA_DIARIA_ATUAL": st.column_config.NumberColumn(
+                        "TAXA DIÁRIA ATUAL", format="%.2f"
+                    ),
+                    "N_RAZAO_TENDENCIA": st.column_config.NumberColumn(
+                        "RAZÃO DE TENDÊNCIA", format="%.2f"
+                    ),
+                    "O_ALERTA_REINCIDENCIA": st.column_config.TextColumn(
+                        "ALERTA DE REINCIDÊNCIA"
+                    ),
+                    "P_PREVISAO_REGRESSAO": st.column_config.NumberColumn(
+                        "PREVISÃO LINEAR", format="%.2f"
+                    ),
+                    "Q_PROJECAO_FECHAMENTO": st.column_config.NumberColumn(
+                        "PROJEÇÃO DE FECHAMENTO", format="%.2f"
+                    ),
+                    "R_COMPARATIVO_ULTIMO_MES": st.column_config.NumberColumn(
+                        "VS. ÚLTIMO MÊS", format="%.2f"
+                    ),
+                },
+            )
 
 with tab_acompanhamento:
     st.subheader("Acompanhamento diário")

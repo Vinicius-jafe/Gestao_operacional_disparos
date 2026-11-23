@@ -11,6 +11,7 @@ Painel web para acompanhamento e análise de **disparos de alarme** de uma opera
 - **Detecção de reincidência** por cliente e análise de Pareto para priorização operacional
 - **Análises complementares** de distribuição por hora/faixa, recorrência mensal, comparação mensal e sinais de possível mau uso/limitador
 - **Taxa por carteira** com as unidades paulistas consolidadas em SP e identificação de empresas sem correspondência
+- **Previsões mensais por cliente** com média diária histórica, alerta de reincidência, regressão linear e projeção de fechamento
 - **Importação de planilhas** (Excel) com controle de arquivos já processados via hash SHA-256, evitando duplicidade
 - **Execução 100% containerizada** com Docker Compose (app + worker + banco)
 
@@ -52,6 +53,29 @@ O `docker-compose.yml` sobe três serviços:
 | `disparos_eventos` | Eventos de disparo (contrato, cliente, empresa, departamento, data/hora e campos derivados como `ano_mes` e `final_de_semana`) |
 | `carteira_filiais` | Quantidade de clientes por filial/núcleo, usada para calcular proporções |
 | `arquivos_processados` | Controle de importações (nome, hash, status, linhas lidas/inseridas, erro) |
+
+## Previsões mensais
+
+A aba **Previsões** compara, por contrato e cliente, os três meses fechados
+anteriores com o mês atual até ontem. A média histórica considera o número real
+de dias de cada mês; a taxa atual usa `max(1, dia do mês - 1)` e a projeção de
+fechamento usa o total de dias do mês corrente. Também são exibidos severidade,
+razão de tendência, alerta de reincidência, previsão linear do próximo mês e
+comparativo com o último mês fechado.
+
+O filtro **Faixa horária das análises**, disponível na barra lateral, permite
+selecionar Madrugada (00:00–05:59), Abertura (06:00–08:59), Comercial
+(08:00–17:59), Fechamento (17:00–21:59) e Noite (22:00–23:59). Comercial se
+sobrepõe a Abertura entre 08:00 e 08:59 e a Fechamento entre 17:00 e 17:59.
+Sem períodos selecionados, são considerados todos os horários. Com mais de um
+período, é possível incluir clientes com disparos em qualquer um deles ou
+somente clientes com disparos em todos. O filtro afeta o monitoramento, as
+previsões e as distribuições por hora/período. Os alertas de mau uso e limitador
+continuam considerando todo o histórico, sem o filtro.
+
+Como o esquema atual de eventos não possui uma coluna de indicador separada, a
+coluna **J (indicador)** corresponde ao total de disparos do mês atual (**I**);
+a classificação é Baixa abaixo de 4, Média de 4 a 9 e Alta a partir de 10.
 
 ##  Como executar
 
