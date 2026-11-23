@@ -43,6 +43,22 @@ def test_monitoramento_filtra_data_e_intervalo_horario(monkeypatch):
     database.verificar_integridade_banco = lambda: None
     database.sincronizar_planilhas = lambda: None
     database.carregar_eventos = lambda: eventos
+    database.carregar_acompanhamento_diario = lambda inicio, fim, empresas, departamentos: (
+        eventos.loc[
+            eventos["data_evento"].between(inicio, fim)
+            & eventos["empresa"].isin(empresas)
+            & eventos["departamento"].isin(departamentos)
+        ]
+        .groupby(
+            ["data_evento", "empresa", "chave_cliente"],
+            as_index=False,
+        )
+        .agg(
+            razao_social=("razao_social", "max"),
+            disparos=("id", "count"),
+        )
+        .rename(columns={"data_evento": "dia"})
+    )
     database.normalizar_nome_filial = lambda empresa, logradouro="": str(empresa).strip().upper()
     database.obter_carteira_df = lambda: carteira
     database.obter_carteira_filiais_dict = lambda: {"FILIAL ALFA": 100}

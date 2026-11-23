@@ -3,6 +3,7 @@ import pytest
 
 from src.metrics import (
     calcular_metricas_filiais,
+    preparar_serie_diaria,
     processar_reincidencia_clientes,
 )
 
@@ -150,3 +151,40 @@ def test_processar_reincidencia_clientes_retorna_apenas_metricas_de_disparos(
         "DIAS_DISTINTOS",
         "CRITICIDADE_PARETO",
     ]
+
+
+def test_preparar_serie_diaria_preenche_dias_sem_disparos_com_zero():
+    eventos = pd.DataFrame(
+        [
+            ("2026-01-01", "FILIAL ALFA", 2),
+            ("2026-01-03", "FILIAL ALFA", 1),
+            ("2026-01-02", "FILIAL BETA", 4),
+        ],
+        columns=["dia", "empresa", "disparos"],
+    )
+
+    resultado = preparar_serie_diaria(
+        eventos,
+        "empresa",
+        ["FILIAL ALFA", "FILIAL BETA"],
+        pd.Timestamp("2026-01-01").date(),
+        pd.Timestamp("2026-01-03").date(),
+    )
+
+    por_filial = resultado.pivot(
+        index="dia",
+        columns="serie",
+        values="disparos",
+    )
+    assert por_filial.to_dict() == {
+        "FILIAL ALFA": {
+            pd.Timestamp("2026-01-01"): 2,
+            pd.Timestamp("2026-01-02"): 0,
+            pd.Timestamp("2026-01-03"): 1,
+        },
+        "FILIAL BETA": {
+            pd.Timestamp("2026-01-01"): 0,
+            pd.Timestamp("2026-01-02"): 4,
+            pd.Timestamp("2026-01-03"): 0,
+        },
+    }

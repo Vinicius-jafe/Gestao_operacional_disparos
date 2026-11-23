@@ -6,6 +6,7 @@ Painel web para acompanhamento e análise de **disparos de alarme** de uma opera
 
 - **Coleta automática** de eventos via API, executada por um worker em segundo plano (`coletor-horario`)
 - **Dashboard interativo** com gráficos (Plotly) e tabelas (Pandas) filtráveis por empresa, departamento e período
+- **Acompanhamento diário** de disparos por filial e por cliente, com comparação de séries no período escolhido
 - **Análise por filial** com base na carteira de clientes de cada unidade e de núcleos especiais (Redes, Totens, Smart P, DGP, Manutenção Regional)
 - **Detecção de reincidência** por cliente e análise de Pareto para priorização operacional
 - **Análises complementares** de distribuição por hora/faixa, recorrência mensal, comparação mensal e sinais de possível mau uso/limitador

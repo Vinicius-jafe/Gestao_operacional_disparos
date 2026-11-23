@@ -13,6 +13,13 @@ logger = logging.getLogger(__name__)
 engine = create_engine(DB_URL, pool_pre_ping=True)
 
 COLUNAS_OBRIGATORIAS_EXCEL = ["Id", "Contrato", "Numero Contrato", "Hora evento"]
+COLUNAS_ACOMPANHAMENTO_DIARIO = [
+    "dia",
+    "empresa",
+    "chave_cliente",
+    "razao_social",
+    "disparos",
+]
 
 def normalizar_nome_filial(empresa: str, logradouro: str = "") -> str:
     """
@@ -497,3 +504,49 @@ def carregar_eventos(data_inicio: Optional[date] = None, data_fim: Optional[date
         df["data_evento"] = pd.to_datetime(df["data_evento"]).dt.date
 
     return df
+
+
+def carregar_acompanhamento_diario(
+    data_inicio: date,
+    data_fim: date,
+    empresas: List[str],
+    departamentos: List[str],
+) -> pd.DataFrame:
+    if data_inicio > data_fim:
+        raise ValueError("data_inicio deve ser anterior ou igual a data_fim.")
+    if not empresas or not departamentos:
+        return pd.DataFrame(columns=COLUNAS_ACOMPANHAMENTO_DIARIO)
+
+    consulta = text("""
+        SELECT
+            data_evento AS dia,
+            empresa,
+            chave_cliente,
+            MAX(razao_social) AS razao_social,
+            COUNT(id) AS disparos
+        FROM disparos_eventos
+        WHERE data_evento BETWEEN :inicio AND :fim
+          AND empresa IN :empresas
+          AND departamento IN :departamentos
+        GROUP BY data_evento, empresa, chave_cliente
+    """).bindparams(
+        bindparam("empresas", expanding=True),
+        bindparam("departamentos", expanding=True),
+    )
+
+    with engine.connect() as conn:
+        df = pd.read_sql(
+            consulta,
+            conn,
+            params={
+                "inicio": data_inicio,
+                "fim": data_fim,
+                "empresas": empresas,
+                "departamentos": departamentos,
+            },
+        )
+
+    if not df.empty:
+        df["dia"] = pd.to_datetime(df["dia"]).dt.date
+        df["disparos"] = df["disparos"].astype(int)
+    return df.loc[:, COLUNAS_ACOMPANHAMENTO_DIARIO]

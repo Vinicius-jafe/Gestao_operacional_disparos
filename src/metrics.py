@@ -1,3 +1,4 @@
+from datetime import date
 from typing import Callable
 
 import pandas as pd
@@ -485,3 +486,46 @@ def processar_reincidencia_clientes(df: pd.DataFrame) -> pd.DataFrame:
 
     grp = grp.rename(columns={"chave_cliente": "CHAVE_CLIENTE"})
     return grp
+
+
+def preparar_serie_diaria(
+    df: pd.DataFrame,
+    coluna_serie: str,
+    series_selecionadas: list[str],
+    data_inicio: date,
+    data_fim: date,
+) -> pd.DataFrame:
+    colunas_saida = ["dia", "serie", "disparos"]
+    if not isinstance(df, pd.DataFrame):
+        raise TypeError("df deve ser um pandas.DataFrame")
+
+    colunas_necessarias = {"dia", coluna_serie, "disparos"}
+    faltantes = colunas_necessarias.difference(df.columns)
+    if faltantes:
+        raise KeyError(f"Colunas obrigatórias ausentes: {sorted(faltantes)}")
+    if data_inicio > data_fim:
+        raise ValueError("data_inicio deve ser anterior ou igual a data_fim.")
+    if not series_selecionadas:
+        return pd.DataFrame(columns=colunas_saida)
+
+    dias = pd.date_range(data_inicio, data_fim, freq="D")
+    indice_completo = pd.MultiIndex.from_product(
+        [dias, series_selecionadas],
+        names=["dia", coluna_serie],
+    )
+    base = df.loc[
+        df[coluna_serie].isin(series_selecionadas),
+        ["dia", coluna_serie, "disparos"],
+    ].copy()
+    base["dia"] = pd.to_datetime(base["dia"], errors="coerce").dt.normalize()
+    base["disparos"] = pd.to_numeric(base["disparos"], errors="raise")
+    base = base.dropna(subset=["dia"])
+    totais = base.groupby(["dia", coluna_serie])["disparos"].sum()
+    resultado = (
+        totais.reindex(indice_completo, fill_value=0)
+        .astype(int)
+        .rename("disparos")
+        .reset_index()
+        .rename(columns={coluna_serie: "serie"})
+    )
+    return resultado.loc[:, colunas_saida]

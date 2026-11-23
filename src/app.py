@@ -7,6 +7,7 @@ import plotly.express as px
 import streamlit as st
 
 from src.database import (
+    carregar_acompanhamento_diario,
     carregar_eventos,
     normalizar_nome_filial,
     obter_carteira_df,
@@ -24,6 +25,7 @@ from src.metrics import (
     comparar_disparos_mensais,
     detectar_limitador,
     detectar_possivel_mau_uso,
+    preparar_serie_diaria,
     processar_reincidencia_clientes,
 )
 from src.presentation import incluir_cod_contrato
@@ -194,6 +196,21 @@ def obter_dados_painel():
     return carregar_eventos(), obter_carteira_df(), obter_carteira_filiais_dict()
 
 
+@st.cache_data(ttl=60)
+def obter_dados_acompanhamento(
+    data_inicio: date,
+    data_fim: date,
+    empresas: tuple[str, ...],
+    departamentos: tuple[str, ...],
+) -> pd.DataFrame:
+    return carregar_acompanhamento_diario(
+        data_inicio,
+        data_fim,
+        list(empresas),
+        list(departamentos),
+    )
+
+
 df, df_carteira, dict_carteiras = obter_dados_painel()
 
 st.markdown('<div class="page-kicker">Operações · monitoramento</div>', unsafe_allow_html=True)
@@ -310,8 +327,13 @@ df_outros = df_fechamento[~mascara_smart]
 
 st.caption(f"Período analisado: {descricao_periodo}")
 
-tab_visao, tab_pareto, tab_plantao = st.tabs(
-    ["Visão geral de filiais", "Reincidência e Pareto", "Monitoramento"]
+tab_visao, tab_pareto, tab_plantao, tab_acompanhamento = st.tabs(
+    [
+        "Visão geral de filiais",
+        "Reincidência e Pareto",
+        "Monitoramento",
+        "Acompanhamento",
+    ]
 )
 
 with tab_visao:
@@ -979,3 +1001,227 @@ with tab_plantao:
                         ),
                     },
                 )
+
+with tab_acompanhamento:
+    st.subheader("Acompanhamento diário")
+    st.caption(
+        "Compare a evolução diária dos disparos para as filiais e os clientes "
+        "incluídos nos filtros globais."
+    )
+
+    datas_acompanhamento = (
+        pd.to_datetime(df["data_evento"], errors="coerce")
+        .dropna()
+        .dt.date
+    )
+    if datas_acompanhamento.empty:
+        st.info("Não há datas de eventos disponíveis para os filtros selecionados.")
+    else:
+        if periodo == historico_label:
+            data_minima = datas_acompanhamento.min()
+            data_maxima = datas_acompanhamento.max()
+        else:
+            ano_periodo, mes_periodo = map(int, periodo.split("-"))
+            data_minima = date(ano_periodo, mes_periodo, 1)
+            data_maxima = min(
+                date(
+                    ano_periodo,
+                    mes_periodo,
+                    calendar.monthrange(ano_periodo, mes_periodo)[1],
+                ),
+                hoje,
+            )
+
+        datas_selecionadas = st.date_input(
+            "Período do acompanhamento",
+            value=(data_minima, data_maxima),
+            min_value=data_minima,
+            max_value=data_maxima,
+            format="DD/MM/YYYY",
+            key=f"acompanhamento_periodo_{periodo}",
+        )
+        if len(datas_selecionadas) != 2:
+            st.info("Selecione as datas inicial e final para exibir o acompanhamento.")
+        else:
+            data_inicio, data_fim = datas_selecionadas
+            dados_acompanhamento = obter_dados_acompanhamento(
+                data_inicio,
+                data_fim,
+                tuple(filiais_selecionadas),
+                tuple(departamentos_selecionados),
+            )
+            if dados_acompanhamento.empty:
+                st.info("Não há disparos no período e nos filtros selecionados.")
+            else:
+                st.subheader("Disparos diários por filial")
+                totais_filiais_acompanhamento = (
+                    dados_acompanhamento.groupby("empresa")["disparos"]
+                    .sum()
+                    .sort_values(ascending=False)
+                )
+                opcoes_filiais_acompanhamento = sorted(
+                    totais_filiais_acompanhamento.index.tolist()
+                )
+                filiais_padrao_acompanhamento = (
+                    totais_filiais_acompanhamento.head(5).index.tolist()
+                )
+                filiais_grafico = st.multiselect(
+                    "Filiais para comparar",
+                    options=opcoes_filiais_acompanhamento,
+                    default=filiais_padrao_acompanhamento,
+                    key="acompanhamento_filiais",
+                )
+                if not filiais_grafico:
+                    st.info("Selecione ao menos uma filial para exibir o gráfico.")
+                else:
+                    serie_filiais = preparar_serie_diaria(
+                        dados_acompanhamento,
+                        "empresa",
+                        filiais_grafico,
+                        data_inicio,
+                        data_fim,
+                    )
+                    grafico_filiais_diario = px.line(
+                        serie_filiais,
+                        x="dia",
+                        y="disparos",
+                        color="serie",
+                        markers=True,
+                        labels={
+                            "dia": "Dia",
+                            "disparos": "Disparos",
+                            "serie": "Filial",
+                        },
+                    )
+                    grafico_filiais_diario.update_layout(
+                        paper_bgcolor="rgba(0,0,0,0)",
+                        plot_bgcolor="rgba(0,0,0,0)",
+                        font={"family": "system-ui, sans-serif", "color": "#f1f3f5"},
+                        margin={"l": 8, "r": 16, "t": 12, "b": 8},
+                        hovermode="x unified",
+                        legend={"orientation": "h", "y": 1.08, "x": 0},
+                        xaxis={"title": "", "tickformat": "%d/%m", "showgrid": False},
+                        yaxis={
+                            "title": "Disparos",
+                            "rangemode": "tozero",
+                            "showgrid": True,
+                            "gridcolor": "#30353d",
+                        },
+                    )
+                    grafico_filiais_diario.update_traces(
+                        line={"width": 2},
+                        marker={"size": 6},
+                    )
+                    st.plotly_chart(grafico_filiais_diario, width="stretch")
+
+                st.divider()
+                st.subheader("Disparos diários por cliente")
+                filiais_clientes = sorted(
+                    dados_acompanhamento["empresa"].dropna().unique().tolist()
+                )
+                filial_clientes = st.selectbox(
+                    "Filial dos clientes",
+                    options=["Todas as filiais", *filiais_clientes],
+                    key="acompanhamento_filial_clientes",
+                )
+                dados_clientes = dados_acompanhamento
+                if filial_clientes != "Todas as filiais":
+                    dados_clientes = dados_clientes.loc[
+                        dados_clientes["empresa"] == filial_clientes
+                    ]
+
+                dados_clientes = dados_clientes.loc[
+                    dados_clientes["chave_cliente"].notna()
+                    & dados_clientes["chave_cliente"]
+                    .astype("string")
+                    .str.strip()
+                    .ne("")
+                ].copy()
+                if dados_clientes.empty:
+                    st.info("Não há clientes identificados para a filial selecionada.")
+                else:
+                    resumo_clientes = (
+                        dados_clientes.groupby("chave_cliente", as_index=False)
+                        .agg(
+                            razao_social=("razao_social", "first"),
+                            total_disparos=("disparos", "sum"),
+                        )
+                        .sort_values("total_disparos", ascending=False)
+                    )
+                    resumo_clientes["rotulo"] = resumo_clientes.apply(
+                        lambda linha: (
+                            f"{linha['razao_social']} · {linha['chave_cliente']}"
+                            if pd.notna(linha["razao_social"])
+                            and str(linha["razao_social"]).strip()
+                            else str(linha["chave_cliente"])
+                        ),
+                        axis=1,
+                    )
+                    rotulos_clientes = dict(
+                        zip(resumo_clientes["chave_cliente"], resumo_clientes["rotulo"])
+                    )
+                    clientes_selecionados = st.multiselect(
+                        "Clientes para comparar",
+                        options=resumo_clientes["chave_cliente"].tolist(),
+                        default=[],
+                        format_func=lambda chave: rotulos_clientes.get(
+                            chave, str(chave)
+                        ),
+                        key="acompanhamento_clientes",
+                    )
+                    if clientes_selecionados:
+                        clientes_grafico = clientes_selecionados
+                    else:
+                        clientes_grafico = (
+                            resumo_clientes["chave_cliente"].head(5).tolist()
+                        )
+                        st.info(
+                            "Nenhum cliente selecionado; exibindo os cinco com "
+                            "maior volume no período."
+                        )
+
+                    dados_clientes_grafico = dados_clientes.loc[
+                        dados_clientes["chave_cliente"].isin(clientes_grafico)
+                    ].copy()
+                    dados_clientes_grafico["cliente"] = (
+                        dados_clientes_grafico["chave_cliente"].map(rotulos_clientes)
+                    )
+                    serie_clientes = preparar_serie_diaria(
+                        dados_clientes_grafico,
+                        "cliente",
+                        [rotulos_clientes[chave] for chave in clientes_grafico],
+                        data_inicio,
+                        data_fim,
+                    )
+                    grafico_clientes_diario = px.line(
+                        serie_clientes,
+                        x="dia",
+                        y="disparos",
+                        color="serie",
+                        markers=True,
+                        labels={
+                            "dia": "Dia",
+                            "disparos": "Disparos",
+                            "serie": "Cliente",
+                        },
+                    )
+                    grafico_clientes_diario.update_layout(
+                        paper_bgcolor="rgba(0,0,0,0)",
+                        plot_bgcolor="rgba(0,0,0,0)",
+                        font={"family": "system-ui, sans-serif", "color": "#f1f3f5"},
+                        margin={"l": 8, "r": 16, "t": 12, "b": 8},
+                        hovermode="x unified",
+                        legend={"orientation": "h", "y": 1.08, "x": 0},
+                        xaxis={"title": "", "tickformat": "%d/%m", "showgrid": False},
+                        yaxis={
+                            "title": "Disparos",
+                            "rangemode": "tozero",
+                            "showgrid": True,
+                            "gridcolor": "#30353d",
+                        },
+                    )
+                    grafico_clientes_diario.update_traces(
+                        line={"width": 2},
+                        marker={"size": 6},
+                    )
+                    st.plotly_chart(grafico_clientes_diario, width="stretch")
