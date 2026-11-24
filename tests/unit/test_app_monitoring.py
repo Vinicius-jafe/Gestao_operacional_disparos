@@ -1,6 +1,6 @@
 import sys
 import types
-from datetime import date, time
+from datetime import date, time, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -8,14 +8,16 @@ from streamlit.testing.v1 import AppTest
 
 
 def test_monitoramento_filtra_data_e_intervalo_horario(monkeypatch):
+    data_hoje = date.today()
+    data_anterior = data_hoje - timedelta(days=1)
     eventos = pd.DataFrame(
         [
-            (1, "2026-11-07", 7, 0),
-            (2, "2026-11-07", 8, 0),
-            (3, "2026-11-07", 14, 0),
-            (4, "2026-11-07", 14, 1),
-            (5, "2026-11-07", 15, 0),
-            (6, "2026-11-08", 10, 0),
+            (1, data_anterior, 7, 0),
+            (2, data_anterior, 8, 0),
+            (3, data_anterior, 14, 0),
+            (4, data_anterior, 14, 1),
+            (5, data_anterior, 15, 0),
+            (6, data_hoje, 10, 0),
         ],
         columns=["id", "data_evento", "hora_int", "minuto"],
     )
@@ -67,13 +69,15 @@ def test_monitoramento_filtra_data_e_intervalo_horario(monkeypatch):
 
     app = AppTest.from_file(
         str(Path(__file__).parents[2] / "src" / "app.py")
-    ).run()
+    ).run(timeout=10)
     assert not app.exception
+    metricas = {elemento.label: elemento.value for elemento in app.metric}
+    assert metricas["Disparos na faixa"] == "1"
 
     seletor_data = next(
         elemento for elemento in app.date_input if elemento.label == "Dia dos eventos"
     )
-    seletor_data.set_value(date(2026, 11, 7))
+    seletor_data.set_value(data_anterior)
     seletor_inicio = next(
         elemento for elemento in app.time_input if elemento.label == "A partir de"
     )
@@ -88,7 +92,7 @@ def test_monitoramento_filtra_data_e_intervalo_horario(monkeypatch):
         if elemento.label == "Períodos incluídos"
     )
     seletor_periodos.set_value(["Abertura"])
-    app.run()
+    app.run(timeout=10)
 
     metricas = {elemento.label: elemento.value for elemento in app.metric}
     assert metricas["Disparos na faixa"] == "1"
@@ -105,5 +109,5 @@ def test_monitoramento_filtra_data_e_intervalo_horario(monkeypatch):
         next(elemento for elemento in app.checkbox if elemento.label == label).set_value(
             True
         )
-    app.run()
+    app.run(timeout=10)
     assert not app.exception

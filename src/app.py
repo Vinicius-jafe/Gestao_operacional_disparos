@@ -693,232 +693,246 @@ with tab_pareto:
                 )
 
 with tab_plantao:
-    st.subheader("Monitoramento por dia e horário")
+    @st.fragment(run_every="5m")
+    def renderizar_monitoramento():
+        st.subheader("Monitoramento por dia e horário")
 
-    datas_eventos = sorted(
-        pd.to_datetime(df_fechamento["data_evento"], errors="coerce")
-        .dropna()
-        .dt.date.unique()
-    )
+        st.caption("Atualização automática a cada 5 minutos.")
+        dados_monitoramento, _, _ = obter_dados_painel()
+        df_monitoramento = dados_monitoramento[
+            dados_monitoramento["empresa"].isin(filiais_selecionadas)
+            & dados_monitoramento["departamento"].isin(departamentos_selecionados)
+        ].copy()
+        datas_normalizadas = pd.to_datetime(
+            df_monitoramento["data_evento"], errors="coerce"
+        ).dt.date
+        df_monitoramento = df_monitoramento.loc[datas_normalizadas <= hoje].copy()
+        datas_eventos = sorted(
+            pd.to_datetime(df_monitoramento["data_evento"], errors="coerce")
+            .dropna()
+            .dt.date.unique()
+        )
 
-    if not datas_eventos:
-        st.info("Não há datas de eventos disponíveis para os filtros selecionados.")
-    else:
-        data_padrao = hoje if hoje in datas_eventos else datas_eventos[-1]
-        coluna_data, coluna_inicio, coluna_fim = st.columns(3)
-        with coluna_data:
-            data_selecionada = st.date_input(
-                "Dia dos eventos",
-                value=data_padrao,
-                min_value=datas_eventos[0],
-                max_value=datas_eventos[-1],
-                format="DD/MM/YYYY",
-                key="monitoramento_data",
-            )
-        with coluna_inicio:
-            horario_inicio = st.time_input(
-                "A partir de",
-                value=time(8, 0),
-                key="monitoramento_horario_inicio",
-            )
-        with coluna_fim:
-            horario_fim = st.time_input(
-                "Até",
-                value=time(14, 0),
-                key="monitoramento_horario_fim",
-            )
-
-        if horario_inicio > horario_fim:
-            st.warning("O horário final deve ser igual ou posterior ao inicial.")
+        if not datas_eventos:
+            st.info("Não há datas de eventos disponíveis para os filtros selecionados.")
         else:
-            minutos_inicio = horario_inicio.hour * 60 + horario_inicio.minute
-            minutos_fim = horario_fim.hour * 60 + horario_fim.minute
-            datas_normalizadas = pd.to_datetime(
-                df_fechamento["data_evento"], errors="coerce"
-            ).dt.date
-            minutos_do_dia = pd.to_numeric(
-                df_fechamento["minuto_do_dia"], errors="coerce"
-            )
-            df_faixa = df_fechamento[
-                (datas_normalizadas == data_selecionada)
-                & minutos_do_dia.between(
-                    minutos_inicio, minutos_fim, inclusive="both"
+            data_padrao = hoje
+            coluna_data, coluna_inicio, coluna_fim = st.columns(3)
+            with coluna_data:
+                data_selecionada = st.date_input(
+                    "Dia dos eventos",
+                    value=data_padrao,
+                    min_value=datas_eventos[0],
+                    max_value=hoje,
+                    format="DD/MM/YYYY",
+                    key="monitoramento_data",
                 )
-            ].copy()
-            df_faixa = filtrar_por_periodos_horarios(
-                df_faixa,
-                periodos_selecionados=periodos_selecionados,
-                modo=modo_periodos,
-            )
+            with coluna_inicio:
+                horario_inicio = st.time_input(
+                    "A partir de",
+                    value=time(8, 0),
+                    key="monitoramento_horario_inicio",
+                )
+            with coluna_fim:
+                horario_fim = st.time_input(
+                    "Até",
+                    value=time(14, 0),
+                    key="monitoramento_horario_fim",
+                )
 
-            descricao_filtro = (
-                ", ".join(periodos_selecionados)
-                if periodos_selecionados
-                else "todos os períodos"
-            )
-            st.caption(
-                f"{data_selecionada.strftime('%d/%m/%Y')} · "
-                f"{horario_inicio.strftime('%H:%M')}–{horario_fim.strftime('%H:%M')} · "
-                f"períodos: {descricao_filtro}"
-            )
-
-            if df_faixa.empty:
-                st.info("Não há eventos nessa data e faixa de horário.")
+            if horario_inicio > horario_fim:
+                st.warning("O horário final deve ser igual ou posterior ao inicial.")
             else:
-                mascara_smart_faixa = df_faixa["departamento"].str.upper().str.contains(
-                    "SMART", na=False
+                minutos_inicio = horario_inicio.hour * 60 + horario_inicio.minute
+                minutos_fim = horario_fim.hour * 60 + horario_fim.minute
+                datas_normalizadas = pd.to_datetime(
+                    df_monitoramento["data_evento"], errors="coerce"
+                ).dt.date
+                minutos_do_dia = pd.to_numeric(
+                    df_monitoramento["minuto_do_dia"], errors="coerce"
                 )
-                total_faixa = len(df_faixa)
-                total_smart_faixa = int(mascara_smart_faixa.sum())
-                clientes_faixa = df_faixa["chave_cliente"].nunique()
-                ultima_hora = df_faixa["hora_int"].max()
-
-                col_total, col_smart, col_clientes, col_hora = st.columns(4)
-                col_total.metric("Disparos na faixa", f"{total_faixa:,}")
-                col_smart.metric("Disparos SMART", f"{total_smart_faixa:,}")
-                col_clientes.metric("Clientes distintos", f"{clientes_faixa:,}")
-                col_hora.metric("Último registro", f"{int(ultima_hora):02d}:00")
-
-                distribuicao_hora = (
-                    df_faixa.groupby("hora_int")["id"]
-                    .count()
-                    .rename("TOTAL_DISPAROS")
-                    .reset_index()
-                )
-                grafico_hora = px.bar(
-                    distribuicao_hora,
-                    x="hora_int",
-                    y="TOTAL_DISPAROS",
-                    labels={
-                        "hora_int": "Hora do dia",
-                        "TOTAL_DISPAROS": "Disparos",
-                    },
-                    color_discrete_sequence=["#83aaff"],
-                )
-                grafico_hora.update_layout(
-                    paper_bgcolor="rgba(0,0,0,0)",
-                    plot_bgcolor="rgba(0,0,0,0)",
-                    font={"family": "system-ui, sans-serif", "color": "#f1f3f5"},
-                    margin={"l": 8, "r": 16, "t": 12, "b": 8},
-                    xaxis={
-                        "tickmode": "linear",
-                        "tick0": 0,
-                        "dtick": 1,
-                        "showgrid": False,
-                    },
-                    yaxis={
-                        "showgrid": True,
-                        "gridcolor": "#30353d",
-                        "title": "Disparos",
-                    },
-                )
-                distribuicao_departamento = (
-                    df_faixa.groupby("departamento")["id"]
-                    .count()
-                    .rename("TOTAL_DISPAROS")
-                    .reset_index()
-                )
-                grafico_departamento = px.pie(
-                    distribuicao_departamento,
-                    names="departamento",
-                    values="TOTAL_DISPAROS",
-                    hole=0.62,
-                    color_discrete_sequence=[
-                        "#83aaff",
-                        "#5f84d6",
-                        "#4766a6",
-                        "#34496f",
-                        "#273448",
-                    ],
-                    labels={
-                        "departamento": "Departamento",
-                        "TOTAL_DISPAROS": "Disparos",
-                    },
-                )
-                grafico_departamento.update_layout(
-                    paper_bgcolor="rgba(0,0,0,0)",
-                    plot_bgcolor="rgba(0,0,0,0)",
-                    font={"family": "system-ui, sans-serif", "color": "#f1f3f5"},
-                    margin={"l": 8, "r": 16, "t": 12, "b": 8},
-                    legend={"orientation": "h", "y": -0.15},
-                )
-                grafico_departamento.update_traces(
-                    textfont={"color": "#f1f3f5"}
-                )
-
-                coluna_horas, coluna_departamentos = st.columns([3, 2])
-                with coluna_horas:
-                    st.subheader("Disparos por hora")
-                    st.plotly_chart(grafico_hora, width="stretch")
-                with coluna_departamentos:
-                    st.subheader("Distribuição por departamento")
-                    st.plotly_chart(grafico_departamento, width="stretch")
-
-                st.subheader("Clientes com mais disparos na faixa")
-                ranking = (
-                    df_faixa.groupby("chave_cliente", as_index=False)
-                    .agg(
-                        RAZAO_SOCIAL=("razao_social", "first"),
-                        EMPRESA=("empresa", "first"),
-                        DEPARTAMENTO=("departamento", "first"),
-                        DISPAROS=("id", "count"),
-                        PRIMEIRO_DISPARO=("hora_evento", "min"),
-                        ULTIMO_DISPARO=("hora_evento", "max"),
+                df_faixa = df_monitoramento[
+                    (datas_normalizadas == data_selecionada)
+                    & minutos_do_dia.between(
+                        minutos_inicio, minutos_fim, inclusive="both"
                     )
-                    .sort_values("DISPAROS", ascending=False)
-                    .reset_index(drop=True)
-                    .rename(columns={"chave_cliente": "CHAVE_CLIENTE"})
-                )
-                ranking = incluir_cod_contrato(ranking).rename(
-                    columns={
-                        "RAZAO_SOCIAL": "CLIENTE",
-                        "EMPRESA": "FILIAL",
-                    }
-                )
-                ranking = ranking.loc[
-                    :,
-                    [
-                        "COD",
-                        "CONTRATO",
-                        "CLIENTE",
-                        "FILIAL",
-                        "DEPARTAMENTO",
-                        "DISPAROS",
-                        "PRIMEIRO_DISPARO",
-                        "ULTIMO_DISPARO",
-                    ],
-                ]
-                st.caption(
-                    "COD identifica o prefixo alfanumérico; CONTRATO mostra o trecho após _."
-                )
-                st.dataframe(
-                    ranking,
-                    hide_index=True,
-                    width="stretch",
-                    column_config={
-                        "COD": st.column_config.TextColumn("COD", width="small"),
-                        "CONTRATO": st.column_config.TextColumn(
-                            "CONTRATO", width="medium"
-                        ),
-                        "CLIENTE": st.column_config.TextColumn(
-                            "CLIENTE", width="large"
-                        ),
-                        "FILIAL": st.column_config.TextColumn("FILIAL", width="medium"),
-                        "DEPARTAMENTO": st.column_config.TextColumn(
-                            "DEPARTAMENTO", width="medium"
-                        ),
-                        "DISPAROS": st.column_config.NumberColumn(
-                            "DISPAROS", format="%d"
-                        ),
-                        "PRIMEIRO_DISPARO": st.column_config.TextColumn(
-                            "PRIMEIRO DISPARO", width="small"
-                        ),
-                        "ULTIMO_DISPARO": st.column_config.TextColumn(
-                            "ÚLTIMO DISPARO", width="small"
-                        ),
-                    },
+                ].copy()
+                df_faixa = filtrar_por_periodos_horarios(
+                    df_faixa,
+                    periodos_selecionados=periodos_selecionados,
+                    modo=modo_periodos,
                 )
 
+                descricao_filtro = (
+                    ", ".join(periodos_selecionados)
+                    if periodos_selecionados
+                    else "todos os períodos"
+                )
+                st.caption(
+                    f"{data_selecionada.strftime('%d/%m/%Y')} · "
+                    f"{horario_inicio.strftime('%H:%M')}–{horario_fim.strftime('%H:%M')} · "
+                    f"períodos: {descricao_filtro}"
+                )
+
+                if df_faixa.empty:
+                    st.info("Não há eventos nessa data e faixa de horário.")
+                else:
+                    mascara_smart_faixa = df_faixa["departamento"].str.upper().str.contains(
+                        "SMART", na=False
+                    )
+                    total_faixa = len(df_faixa)
+                    total_smart_faixa = int(mascara_smart_faixa.sum())
+                    clientes_faixa = df_faixa["chave_cliente"].nunique()
+                    ultima_hora = df_faixa["hora_int"].max()
+
+                    col_total, col_smart, col_clientes, col_hora = st.columns(4)
+                    col_total.metric("Disparos na faixa", f"{total_faixa:,}")
+                    col_smart.metric("Disparos SMART", f"{total_smart_faixa:,}")
+                    col_clientes.metric("Clientes distintos", f"{clientes_faixa:,}")
+                    col_hora.metric("Último registro", f"{int(ultima_hora):02d}:00")
+
+                    distribuicao_hora = (
+                        df_faixa.groupby("hora_int")["id"]
+                        .count()
+                        .rename("TOTAL_DISPAROS")
+                        .reset_index()
+                    )
+                    grafico_hora = px.bar(
+                        distribuicao_hora,
+                        x="hora_int",
+                        y="TOTAL_DISPAROS",
+                        labels={
+                            "hora_int": "Hora do dia",
+                            "TOTAL_DISPAROS": "Disparos",
+                        },
+                        color_discrete_sequence=["#83aaff"],
+                    )
+                    grafico_hora.update_layout(
+                        paper_bgcolor="rgba(0,0,0,0)",
+                        plot_bgcolor="rgba(0,0,0,0)",
+                        font={"family": "system-ui, sans-serif", "color": "#f1f3f5"},
+                        margin={"l": 8, "r": 16, "t": 12, "b": 8},
+                        xaxis={
+                            "tickmode": "linear",
+                            "tick0": 0,
+                            "dtick": 1,
+                            "showgrid": False,
+                        },
+                        yaxis={
+                            "showgrid": True,
+                            "gridcolor": "#30353d",
+                            "title": "Disparos",
+                        },
+                    )
+                    distribuicao_departamento = (
+                        df_faixa.groupby("departamento")["id"]
+                        .count()
+                        .rename("TOTAL_DISPAROS")
+                        .reset_index()
+                    )
+                    grafico_departamento = px.pie(
+                        distribuicao_departamento,
+                        names="departamento",
+                        values="TOTAL_DISPAROS",
+                        hole=0.62,
+                        color_discrete_sequence=[
+                            "#83aaff",
+                            "#5f84d6",
+                            "#4766a6",
+                            "#34496f",
+                            "#273448",
+                        ],
+                        labels={
+                            "departamento": "Departamento",
+                            "TOTAL_DISPAROS": "Disparos",
+                        },
+                    )
+                    grafico_departamento.update_layout(
+                        paper_bgcolor="rgba(0,0,0,0)",
+                        plot_bgcolor="rgba(0,0,0,0)",
+                        font={"family": "system-ui, sans-serif", "color": "#f1f3f5"},
+                        margin={"l": 8, "r": 16, "t": 12, "b": 8},
+                        legend={"orientation": "h", "y": -0.15},
+                    )
+                    grafico_departamento.update_traces(
+                        textfont={"color": "#f1f3f5"}
+                    )
+
+                    coluna_horas, coluna_departamentos = st.columns([3, 2])
+                    with coluna_horas:
+                        st.subheader("Disparos por hora")
+                        st.plotly_chart(grafico_hora, width="stretch")
+                    with coluna_departamentos:
+                        st.subheader("Distribuição por departamento")
+                        st.plotly_chart(grafico_departamento, width="stretch")
+
+                    st.subheader("Clientes com mais disparos na faixa")
+                    ranking = (
+                        df_faixa.groupby("chave_cliente", as_index=False)
+                        .agg(
+                            RAZAO_SOCIAL=("razao_social", "first"),
+                            EMPRESA=("empresa", "first"),
+                            DEPARTAMENTO=("departamento", "first"),
+                            DISPAROS=("id", "count"),
+                            PRIMEIRO_DISPARO=("hora_evento", "min"),
+                            ULTIMO_DISPARO=("hora_evento", "max"),
+                        )
+                        .sort_values("DISPAROS", ascending=False)
+                        .reset_index(drop=True)
+                        .rename(columns={"chave_cliente": "CHAVE_CLIENTE"})
+                    )
+                    ranking = incluir_cod_contrato(ranking).rename(
+                        columns={
+                            "RAZAO_SOCIAL": "CLIENTE",
+                            "EMPRESA": "FILIAL",
+                        }
+                    )
+                    ranking = ranking.loc[
+                        :,
+                        [
+                            "COD",
+                            "CONTRATO",
+                            "CLIENTE",
+                            "FILIAL",
+                            "DEPARTAMENTO",
+                            "DISPAROS",
+                            "PRIMEIRO_DISPARO",
+                            "ULTIMO_DISPARO",
+                        ],
+                    ]
+                    st.caption(
+                        "COD identifica o prefixo alfanumérico; CONTRATO mostra o trecho após _."
+                    )
+                    st.dataframe(
+                        ranking,
+                        hide_index=True,
+                        width="stretch",
+                        column_config={
+                            "COD": st.column_config.TextColumn("COD", width="small"),
+                            "CONTRATO": st.column_config.TextColumn(
+                                "CONTRATO", width="medium"
+                            ),
+                            "CLIENTE": st.column_config.TextColumn(
+                                "CLIENTE", width="large"
+                            ),
+                            "FILIAL": st.column_config.TextColumn("FILIAL", width="medium"),
+                            "DEPARTAMENTO": st.column_config.TextColumn(
+                                "DEPARTAMENTO", width="medium"
+                            ),
+                            "DISPAROS": st.column_config.NumberColumn(
+                                "DISPAROS", format="%d"
+                            ),
+                            "PRIMEIRO_DISPARO": st.column_config.TextColumn(
+                                "PRIMEIRO DISPARO", width="small"
+                            ),
+                            "ULTIMO_DISPARO": st.column_config.TextColumn(
+                                "ÚLTIMO DISPARO", width="small"
+                            ),
+                        },
+                    )
+
+
+    renderizar_monitoramento()
     with st.expander("Análises operacionais complementares", expanded=False):
         st.caption(
             "Disparos por hora, por período e previsões respeitam o período e os "

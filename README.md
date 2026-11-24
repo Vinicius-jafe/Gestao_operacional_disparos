@@ -73,6 +73,10 @@ somente clientes com disparos em todos. O filtro afeta o monitoramento, as
 previsões e as distribuições por hora/período. Os alertas de mau uso e limitador
 continuam considerando todo o histórico, sem o filtro.
 
+O monitoramento por dia e horário considera todo o histórico disponível até
+hoje, incluindo os disparos do dia atual, e atualiza essa seção automaticamente
+a cada cinco minutos.
+
 Como o esquema atual de eventos não possui uma coluna de indicador separada, a
 coluna **J (indicador)** corresponde ao total de disparos do mês atual (**I**);
 a classificação é Baixa abaixo de 4, Média de 4 a 9 e Alta a partir de 10.
