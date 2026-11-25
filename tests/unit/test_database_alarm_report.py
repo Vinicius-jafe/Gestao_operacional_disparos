@@ -1,0 +1,179 @@
+from contextlib import contextmanager
+from datetime import date
+
+import pandas as pd
+import pytest
+
+import src.database as database
+
+
+class FakeResult:
+    def scalar_one(self):
+        return 73
+
+
+class FakeConnection:
+    def __init__(self):
+        self.executions = []
+
+    def execute(self, statement, params=None):
+        self.executions.append((str(statement), params))
+        return FakeResult()
+
+
+class FakeEngine:
+    def __init__(self, connection):
+        self.connection = connection
+
+    @contextmanager
+    def begin(self):
+        yield self.connection
+
+
+def report_item(contract_id):
+    return {
+        "cod_contrato": f"C{contract_id}",
+        "empresa": "FILIAL TESTE",
+        "razao_social": "CLIENTE TESTE",
+        "num_contrato": contract_id,
+        "departamento": "Smart Alarm",
+        "department_id": 4,
+        "department_mapping_confidence": "OFICIAL",
+        "disparos": 8,
+        "message_count": 12,
+        "zona_disparos": "Entrada",
+        "data": date(2026, 11, 24),
+        "mes": 11,
+        "estado": "MG",
+    }
+
+
+def test_salvar_snapshot_insere_metadados_e_itens_na_mesma_transacao(monkeypatch):
+    connection = FakeConnection()
+    monkeypatch.setattr(database, "engine", FakeEngine(connection))
+
+    snapshot_id = database.salvar_snapshot_relatorio_contratos(
+        period_start=date(2026, 11, 17),
+        period_end=date(2026, 11, 24),
+        page_size=25,
+        page_count=1,
+        total_item_count=1,
+        items=[report_item(10)],
+    )
+
+    assert snapshot_id == 73
+    assert len(connection.executions) == 2
+    assert "INSERT INTO alarm_report_snapshots" in connection.executions[0][0]
+    assert "INSERT INTO disparos_sensor" in connection.executions[1][0]
+    assert connection.executions[1][1][0]["snapshot_id"] == 73
+
+
+def test_salvar_snapshot_rejeita_itens_repetidos(monkeypatch):
+    connection = FakeConnection()
+    monkeypatch.setattr(database, "engine", FakeEngine(connection))
+
+    with pytest.raises(ValueError, match="Contrato repetido"):
+        database.salvar_snapshot_relatorio_contratos(
+            period_start=date(2026, 11, 17),
+            period_end=date(2026, 11, 24),
+            page_size=25,
+            page_count=1,
+            total_item_count=2,
+            items=[report_item(10), report_item(10)],
+        )
+
+    assert connection.executions == []
+
+
+def test_carregar_relatorio_sensores_busca_ultimo_snapshot_de_cada_periodo(
+    monkeypatch,
+):
+    chamadas = {}
+
+    class ReadEngine:
+        @contextmanager
+        def connect(self):
+            yield object()
+
+    def ler_sql(consulta, conexao):
+        chamadas["consulta"] = str(consulta)
+        return pd.DataFrame()
+
+    monkeypatch.setattr(database, "engine", ReadEngine())
+    monkeypatch.setattr(database.pd, "read_sql", ler_sql)
+
+    resultado = database.carregar_relatorio_sensores()
+
+    assert resultado.empty
+    assert "DISTINCT ON (period_start, period_end)" in chamadas["consulta"]
+    assert "ORDER BY period_start, period_end, collected_at DESC, id DESC" in (
+        chamadas["consulta"]
+    )
+    assert "LIMIT 1" not in chamadas["consulta"]
+
+
+def test_carregar_periodos_analise_sensores_retorna_datas_e_horas_com_sensor(
+    monkeypatch,
+):
+    chamadas = {}
+
+    class ReadEngine:
+        @contextmanager
+        def connect(self):
+            yield object()
+
+    def ler_sql(consulta, conexao):
+        chamadas["consulta"] = str(consulta)
+        return pd.DataFrame(
+            [{"dia": date(2026, 11, 10), "hora_cheia": 12}]
+        )
+
+    monkeypatch.setattr(database, "engine", ReadEngine())
+    monkeypatch.setattr(database.pd, "read_sql", ler_sql)
+
+    resultado = database.carregar_periodos_analise_sensores()
+
+    assert resultado.loc[0, "hora_cheia"] == 12
+    assert "FROM vw_analise_disp_sensor" in chamadas["consulta"]
+    assert "hora_cheia BETWEEN 0 AND 23" in chamadas["consulta"]
+
+
+def test_carregar_contratos_analise_sensores_filtra_data_e_hora(monkeypatch):
+    chamadas = {}
+
+    class ReadEngine:
+        @contextmanager
+        def connect(self):
+            yield object()
+
+    def ler_sql(consulta, conexao, params):
+        chamadas["consulta"] = str(consulta)
+        chamadas["params"] = params
+        return pd.DataFrame(
+            [
+                {
+                    "num_contrato": 10,
+                    "departamento": "SMART ALARM",
+                    "estado": "MG",
+                }
+            ]
+        )
+
+    monkeypatch.setattr(database, "engine", ReadEngine())
+    monkeypatch.setattr(database.pd, "read_sql", ler_sql)
+
+    resultado = database.carregar_contratos_analise_sensores(
+        date(2026, 11, 10), 12
+    )
+
+    assert resultado.loc[0, "num_contrato"] == 10
+    assert "hora_cheia = :hora_analise" in chamadas["consulta"]
+    assert chamadas["params"] == {
+        "data_analise": date(2026, 11, 10),
+        "hora_analise": 12,
+    }
+
+
+def test_carregar_contratos_analise_sensores_rejeita_hora_invalida():
+    with pytest.raises(ValueError, match="entre 0 e 23"):
+        database.carregar_contratos_analise_sensores(date(2026, 11, 10), 24)

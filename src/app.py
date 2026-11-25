@@ -8,7 +8,10 @@ import streamlit as st
 
 from src.database import (
     carregar_acompanhamento_diario,
+    carregar_contratos_analise_sensores,
     carregar_eventos,
+    carregar_periodos_analise_sensores,
+    carregar_relatorio_sensores,
     normalizar_nome_filial,
     obter_carteira_df,
     obter_carteira_filiais_dict,
@@ -214,6 +217,23 @@ def obter_dados_acompanhamento(
     )
 
 
+@st.cache_data(ttl=60)
+def obter_relatorio_sensores() -> pd.DataFrame:
+    return carregar_relatorio_sensores()
+
+
+@st.cache_data(ttl=60)
+def obter_periodos_analise_sensores() -> pd.DataFrame:
+    return carregar_periodos_analise_sensores()
+
+
+@st.cache_data(ttl=60)
+def obter_contratos_analise_sensores(
+    data_analise: date, hora_analise: int
+) -> pd.DataFrame:
+    return carregar_contratos_analise_sensores(data_analise, hora_analise)
+
+
 df, df_carteira, dict_carteiras = obter_dados_painel()
 
 st.markdown('<div class="page-kicker">Operações · monitoramento</div>', unsafe_allow_html=True)
@@ -350,13 +370,14 @@ df_outros = df_fechamento[~mascara_smart]
 
 st.caption(f"Período analisado: {descricao_periodo}")
 
-tab_visao, tab_pareto, tab_plantao, tab_acompanhamento, tab_previsao = st.tabs(
+tab_visao, tab_pareto, tab_plantao, tab_acompanhamento, tab_previsao, tab_sensores = st.tabs(
     [
         "Visão geral de filiais",
         "Reincidência e Pareto",
         "Monitoramento",
         "Acompanhamento",
         "Previsões",
+        "Sensores",
     ]
 )
 
@@ -1340,3 +1361,370 @@ with tab_acompanhamento:
                         marker={"size": 6},
                     )
                     st.plotly_chart(grafico_clientes_diario, width="stretch")
+
+with tab_sensores:
+    st.subheader("Relatório de sensores")
+    dados_sensores = obter_relatorio_sensores()
+    if dados_sensores.empty or dados_sensores["snapshot_id"].isna().all():
+        st.info("O coletor ainda não salvou um relatório de sensores.")
+    else:
+        snapshots = dados_sensores.drop_duplicates("snapshot_id")
+        dados_sensores = dados_sensores.loc[dados_sensores["id"].notna()].copy()
+        inicio_relatorio = pd.to_datetime(snapshots["period_start"]).min().strftime(
+            "%d/%m/%Y"
+        )
+        fim_relatorio = pd.to_datetime(snapshots["period_end"]).max().strftime(
+            "%d/%m/%Y"
+        )
+        ultima_carga = pd.to_datetime(snapshots["collected_at"]).max().strftime(
+            "%d/%m/%Y às %H:%M"
+        )
+        st.caption(
+            f"Período coberto: {inicio_relatorio} a {fim_relatorio} · "
+            f"{len(snapshots)} snapshots · última carga: {ultima_carga}"
+        )
+        st.info(
+            "O filtro de hora usa os registros de analise.hora_cheia. Como os dados "
+            "de sensor são agregados por dia e não trazem o horário individual, "
+            "os sensores exibidos são uma associação aproximada aos contratos com "
+            "análise naquela hora."
+        )
+
+        periodos_analise_sensores = obter_periodos_analise_sensores()
+        if periodos_analise_sensores.empty:
+            dados_sensores = dados_sensores.iloc[0:0].copy()
+            st.info("Não há datas e horários de análise relacionados a sensores.")
+        else:
+            periodos_analise_sensores["dia"] = pd.to_datetime(
+                periodos_analise_sensores["dia"]
+            ).dt.date
+            datas_analise_disponiveis = sorted(
+                periodos_analise_sensores["dia"].unique()
+            )
+            col_data_analise, col_hora_analise = st.columns(2)
+            with col_data_analise:
+                data_analise_selecionada = st.date_input(
+                    "Data da análise",
+                    value=datas_analise_disponiveis[-1],
+                    min_value=datas_analise_disponiveis[0],
+                    max_value=datas_analise_disponiveis[-1],
+                    key="sensores_data_analise",
+                )
+            horas_analise_disponiveis = sorted(
+                periodos_analise_sensores.loc[
+                    periodos_analise_sensores["dia"]
+                    == data_analise_selecionada,
+                    "hora_cheia",
+                ]
+                .dropna()
+                .astype(int)
+                .unique()
+            )
+            if not horas_analise_disponiveis:
+                dados_sensores = dados_sensores.iloc[0:0].copy()
+                st.info("Não há análise relacionada a sensores nesta data.")
+            else:
+                with col_hora_analise:
+                    hora_analise_selecionada = st.selectbox(
+                        "Hora da análise",
+                        options=horas_analise_disponiveis,
+                        format_func=lambda hora: f"{hora:02d}:00–{hora + 1:02d}:00",
+                        key="sensores_hora_analise",
+                    )
+
+                contratos_na_hora = obter_contratos_analise_sensores(
+                    data_analise_selecionada,
+                    int(hora_analise_selecionada),
+                )
+                intervalo_hora_analise = (
+                    f"{hora_analise_selecionada:02d}:00–"
+                    f"{(hora_analise_selecionada + 1) % 24:02d}:00"
+                )
+                if contratos_na_hora.empty:
+                    dados_sensores = dados_sensores.iloc[0:0].copy()
+                else:
+                    dados_sensores["_data_analise"] = pd.to_datetime(
+                        dados_sensores["data"], errors="coerce"
+                    ).dt.date
+                    dados_sensores["_numero_analise"] = pd.to_numeric(
+                        dados_sensores["num_contrato"], errors="coerce"
+                    ).astype("Int64")
+                    dados_sensores["_departamento_analise"] = (
+                        dados_sensores["departamento"]
+                        .fillna("")
+                        .astype(str)
+                        .str.strip()
+                        .str.upper()
+                    )
+                    dados_sensores["_estado_analise"] = (
+                        dados_sensores["estado"]
+                        .fillna("")
+                        .astype(str)
+                        .str.strip()
+                        .str.upper()
+                    )
+                    contratos_na_hora["_numero_analise"] = pd.to_numeric(
+                        contratos_na_hora["num_contrato"], errors="coerce"
+                    ).astype("Int64")
+                    chaves_contratos = set(
+                        contratos_na_hora[
+                            [
+                                "_numero_analise",
+                                "departamento",
+                                "estado",
+                            ]
+                        ]
+                        .itertuples(index=False, name=None)
+                    )
+                    chaves_sensores = pd.Series(
+                        list(
+                            zip(
+                                dados_sensores["_numero_analise"],
+                                dados_sensores["_departamento_analise"],
+                                dados_sensores["_estado_analise"],
+                            )
+                        ),
+                        index=dados_sensores.index,
+                    )
+                    selecionados_na_hora = chaves_sensores.isin(chaves_contratos)
+                    dados_sensores = dados_sensores.loc[
+                        (dados_sensores["_data_analise"] == data_analise_selecionada)
+                        & selecionados_na_hora
+                    ].drop(
+                        columns=[
+                            "_data_analise",
+                            "_numero_analise",
+                            "_departamento_analise",
+                            "_estado_analise",
+                        ]
+                    )
+                    st.caption(
+                        f"Análise: {data_analise_selecionada:%d/%m/%Y} · "
+                        f"{intervalo_hora_analise}"
+                    )
+                    dados_sensores["hora_analise"] = intervalo_hora_analise
+
+        if dados_sensores.empty:
+            st.info("Não há contratos de sensores para a data e hora selecionadas.")
+        else:
+            col_filtro_filial, col_filtro_depto, col_filtro_modelo = st.columns(3)
+            filiais_sensores = sorted(
+                dados_sensores["empresa"].dropna().unique().tolist()
+            )
+            departamentos_sensores = sorted(
+                dados_sensores["departamento"].dropna().unique().tolist()
+            )
+            modelos_sensores = sorted(
+                dados_sensores["modelo_sensor"].dropna().unique().tolist()
+            )
+            with col_filtro_filial:
+                filiais_sensor_selecionadas = st.multiselect(
+                    "Filiais do relatório",
+                    options=filiais_sensores,
+                    default=filiais_sensores,
+                    key="sensores_filiais",
+                )
+            with col_filtro_depto:
+                departamentos_sensor_selecionados = st.multiselect(
+                    "Departamentos do relatório",
+                    options=departamentos_sensores,
+                    default=departamentos_sensores,
+                    key="sensores_departamentos",
+                )
+            with col_filtro_modelo:
+                modelos_sensor_selecionados = st.multiselect(
+                    "Modelos de sensor",
+                    options=modelos_sensores,
+                    default=modelos_sensores,
+                    key="sensores_modelos",
+                )
+
+            busca_sensor = st.text_input(
+                "Buscar cliente, código ou número do contrato",
+                key="sensores_busca",
+            ).strip()
+            mascara_sensores = (
+                dados_sensores["empresa"].isin(filiais_sensor_selecionadas)
+                & dados_sensores["departamento"].isin(
+                    departamentos_sensor_selecionados
+                )
+                & dados_sensores["modelo_sensor"].isin(modelos_sensor_selecionados)
+            )
+            if busca_sensor:
+                corresponde_busca = pd.Series(
+                    False, index=dados_sensores.index, dtype=bool
+                )
+                for coluna_busca in (
+                    "razao_social",
+                    "cod_contrato",
+                    "num_contrato",
+                ):
+                    corresponde_busca |= dados_sensores[coluna_busca].astype(
+                        "string"
+                    ).str.contains(busca_sensor, case=False, regex=False, na=False)
+                mascara_sensores &= corresponde_busca
+
+            sensores_filtrados = dados_sensores.loc[mascara_sensores].copy()
+            if sensores_filtrados.empty:
+                st.info("Nenhum contrato corresponde aos filtros selecionados.")
+            else:
+                total_registros_sensor = len(sensores_filtrados)
+                total_clientes_sensor = sensores_filtrados["razao_social"].nunique()
+                total_mensagens_api = int(
+                    pd.to_numeric(
+                        sensores_filtrados["message_count"], errors="coerce"
+                    )
+                    .fillna(0)
+                    .sum()
+                )
+                metrica_contratos, metrica_clientes, metrica_mensagens = st.columns(3)
+                metrica_contratos.metric(
+                    "Registros de contrato/dia", f"{total_registros_sensor:,}"
+                )
+                metrica_clientes.metric(
+                    "Clientes identificados", f"{total_clientes_sensor:,}"
+                )
+                metrica_mensagens.metric(
+                    "Mensagens no período · API", f"{total_mensagens_api:,}"
+                )
+
+                contratos_por_modelo = (
+                    sensores_filtrados.groupby("modelo_sensor", as_index=False)
+                    .size()
+                    .rename(columns={"size": "REGISTROS"})
+                    .sort_values("REGISTROS", ascending=False)
+                )
+                zonas_principais = (
+                    sensores_filtrados.dropna(subset=["zona_disparos"])
+                    .groupby("zona_disparos", as_index=False)
+                    .agg(
+                        CONTAGEM_REPORTADA=("disparos", "sum"),
+                        REGISTROS=("num_contrato", "count"),
+                    )
+                    .sort_values("CONTAGEM_REPORTADA", ascending=False)
+                    .head(10)
+                )
+                grafico_modelos, grafico_zonas = st.columns(2)
+                with grafico_modelos:
+                    st.subheader("Registros por modelo")
+                    st.plotly_chart(
+                        px.bar(
+                            contratos_por_modelo,
+                            x="modelo_sensor",
+                            y="REGISTROS",
+                            labels={
+                                "modelo_sensor": "Modelo classificado",
+                                "REGISTROS": "Registros",
+                            },
+                            color_discrete_sequence=["#83aaff"],
+                        ),
+                        width="stretch",
+                    )
+                with grafico_zonas:
+                    st.subheader("Zonas principais")
+                    if zonas_principais.empty:
+                        st.info("Não há descrições de zona nesta seleção.")
+                    else:
+                        st.plotly_chart(
+                            px.bar(
+                                zonas_principais.sort_values(
+                                    "CONTAGEM_REPORTADA"
+                                ),
+                                x="CONTAGEM_REPORTADA",
+                                y="zona_disparos",
+                                orientation="h",
+                                labels={
+                                    "zona_disparos": "Zona",
+                                    "CONTAGEM_REPORTADA": "Contagem informada",
+                                },
+                                hover_data={"REGISTROS": True},
+                                color_discrete_sequence=["#83aaff"],
+                            ),
+                            width="stretch",
+                        )
+                st.caption(
+                    "A classificação do modelo é estimada pelo texto da zona. "
+                    "A contagem por zona usa `triggerCount` quando disponível e "
+                    "`messageCount` como alternativa; não representa necessariamente "
+                    "o total de disparos de todos os sensores do contrato."
+                )
+
+                tabela_sensores = sensores_filtrados.rename(
+                    columns={
+                        "razao_social": "CLIENTE",
+                        "cod_contrato": "CÓDIGO",
+                        "num_contrato": "CONTRATO",
+                        "data": "DATA",
+                        "hora_analise": "HORA DA ANÁLISE",
+                        "empresa": "FILIAL",
+                        "departamento": "DEPARTAMENTO",
+                        "disparos": "CONTAGEM REPORTADA",
+                        "message_count": "MENSAGENS API",
+                        "zona_disparos": "ZONA PRINCIPAL",
+                        "modelo_sensor": "MODELO",
+                        "estado": "UF",
+                        "department_mapping_confidence": "CONFIANÇA DEPARTAMENTO",
+                    }
+                )
+                colunas_tabela = [
+                    "CLIENTE",
+                    "CÓDIGO",
+                    "CONTRATO",
+                    "DATA",
+                    "HORA DA ANÁLISE",
+                    "FILIAL",
+                    "DEPARTAMENTO",
+                    "MODELO",
+                    "ZONA PRINCIPAL",
+                    "CONTAGEM REPORTADA",
+                    "MENSAGENS API",
+                    "UF",
+                    "CONFIANÇA DEPARTAMENTO",
+                ]
+                st.dataframe(
+                    tabela_sensores[colunas_tabela],
+                    hide_index=True,
+                    width="stretch",
+                    column_config={
+                        "CLIENTE": st.column_config.TextColumn(
+                            "CLIENTE", width="large"
+                        ),
+                        "CÓDIGO": st.column_config.TextColumn(
+                            "CÓDIGO", width="small"
+                        ),
+                        "CONTRATO": st.column_config.NumberColumn(
+                            "CONTRATO", format="%d"
+                        ),
+                        "DATA": st.column_config.DateColumn(
+                            "DATA", format="DD/MM/YYYY"
+                        ),
+                        "HORA DA ANÁLISE": st.column_config.TextColumn(
+                            "HORA DA ANÁLISE", width="small"
+                        ),
+                        "FILIAL": st.column_config.TextColumn("FILIAL"),
+                        "DEPARTAMENTO": st.column_config.TextColumn("DEPARTAMENTO"),
+                        "MODELO": st.column_config.TextColumn("MODELO"),
+                        "ZONA PRINCIPAL": st.column_config.TextColumn(
+                            "ZONA PRINCIPAL", width="large"
+                        ),
+                        "CONTAGEM REPORTADA": st.column_config.NumberColumn(
+                            "CONTAGEM REPORTADA", format="%d"
+                        ),
+                        "MENSAGENS API": st.column_config.NumberColumn(
+                            "MENSAGENS API", format="%d"
+                        ),
+                        "UF": st.column_config.TextColumn("UF", width="small"),
+                        "CONFIANÇA DEPARTAMENTO": st.column_config.TextColumn(
+                            "MAPEAMENTO DO DEPARTAMENTO"
+                        ),
+                    },
+                )
+                st.download_button(
+                    "Baixar relatório filtrado (CSV)",
+                    data=tabela_sensores[colunas_tabela].to_csv(
+                        index=False
+                    ).encode("utf-8-sig"),
+                    file_name="relatorio_sensores.csv",
+                    mime="text/csv",
+                    key="download_relatorio_sensores",
+                )

@@ -12,6 +12,7 @@ Painel web para acompanhamento e análise de **disparos de alarme** de uma opera
 - **Análises complementares** de distribuição por hora/faixa, recorrência mensal, comparação mensal e sinais de possível mau uso/limitador
 - **Taxa por carteira** com as unidades paulistas consolidadas em SP e identificação de empresas sem correspondência
 - **Previsões mensais por cliente** com média diária histórica, alerta de reincidência, regressão linear e projeção de fechamento
+- **Relatório de sensores** com filtros por filial, departamento e modelo, busca por cliente/contrato, gráficos e exportação CSV
 - **Importação de planilhas** (Excel) com controle de arquivos já processados via hash SHA-256, evitando duplicidade
 - **Execução 100% containerizada** com Docker Compose (app + worker + banco)
 
@@ -45,14 +46,47 @@ O `docker-compose.yml` sobe três serviços:
 - **`postgres-db`**: banco PostgreSQL, inicializado com o `init.sql`
 - **`painel-disparos`**: aplicação Streamlit (`src/app.py`) na porta `8501`
 - **`coletor-horario`**: worker de coleta (`src/collector.py`)
+- **`coletor-relatorio-alarmes`**: snapshots horários do relatório de contratos
+  (`src/alarm_report_collector.py`)
+- **`migrar-analise-legada`**: comando opcional para copiar a tabela `analise`
+  do SQLite legado ao PostgreSQL
 
 ##  Modelo de dados
 
 | Tabela | Descrição |
 |---|---|
 | `disparos_eventos` | Eventos de disparo (contrato, cliente, empresa, departamento, data/hora e campos derivados como `ano_mes` e `final_de_semana`) |
+| `analise` | Histórico diário importado do banco SQLite legado |
+| `alarm_report_snapshots` | Metadados de cada coleta do relatório agregado de contratos |
+| `disparos_sensor` | Top zona e contagens aproximadas por contrato e snapshot, com classificação gerada do modelo |
+| `vw_analise_disp_sensor` | View que relaciona o histórico diário com o último snapshot de cada período consultado |
 | `carteira_filiais` | Quantidade de clientes por filial/núcleo, usada para calcular proporções |
 | `arquivos_processados` | Controle de importações (nome, hash, status, linhas lidas/inseridas, erro) |
+
+O relatório agregado é coletado separadamente a cada hora para os últimos sete
+dias (hoje e os sete dias anteriores). Cada execução cria um snapshot próprio;
+`disparos_sensor.disparos` usa `topZone.triggerCount` quando disponível e
+`messageCount` como fallback, enquanto `message_count` preserva o total da API.
+`data` representa a data final do período consultado, não a data real do
+disparo; portanto, o cruzamento da view é aproximado. Cada linha contém somente
+a zona mais recorrente daquele contrato, não todas as zonas. A coleta segue
+`hasNextPage`, descarta contratos repetidos pelo `contractIdErp` e reinicia a
+paginação uma vez se a quantidade final não coincidir com a API, evitando
+snapshots duplicados ou incompletos. O mapeamento do
+departamento 17 para SEMAX é marcado como inferido em
+`department_mapping_confidence`. Com o volume da amostra (8.249 contratos), a
+coleta horária pode gerar cerca de 198 mil linhas por dia; não há expurgo
+automático de snapshots.
+
+A aba **Sensores** combina o snapshot mais recente de cada período, incluindo os
+registros históricos diários importados, e mostra registros por modelo, zonas
+principais e contagens por cliente. A tabela exibe a data de cada registro; para
+os snapshots do endpoint agregado, ela representa o fim da janela consultada.
+Os filtros de data e hora usam `analise.dia` e `analise.hora_cheia`; os sensores
+exibidos são os contratos relacionados aos eventos naquela hora. Como o endpoint
+de sensores agrega dados por dia e não retorna o horário individual nem todas
+as zonas instaladas, essa associação por hora é aproximada e não identifica o
+horário real de disparo de cada sensor.
 
 ## Previsões mensais
 
@@ -122,6 +156,11 @@ a classificação é Baixa abaixo de 4, Média de 4 a 9 e Alta a partir de 10.
 | `EMIVE_API_BASE_URL` | URL base da API |
 | `EMIVE_API_PEAK_ENDPOINT` | Endpoint de consulta dos eventos |
 | `DEPARTAMENTOS_FILTRO` | Departamentos considerados na coleta |
+| `EMIVE_ALARM_REPORT_ENDPOINT` | Endpoint do relatório agregado de contratos |
+| `EMIVE_ALARM_REPORT_DEPARTMENTS_IDS` | IDs de departamentos para esse relatório (padrão: 1 a 50) |
+| `EMIVE_ALARM_REPORT_PAGE_SIZE` | Itens por página (padrão: 25) |
+| `EMIVE_ALARM_REPORT_REQUEST_INTERVAL_SECONDS` | Pausa mínima entre requisições do relatório (padrão: 1 segundo) |
+| `EMIVE_ALARM_REPORT_INTERVAL_SECONDS` | Intervalo entre coletas, em segundos (padrão: 3600) |
 | `EMIVE_ORIGIN_URL` / `EMIVE_REFERER_URL` | Cabeçalhos `Origin` e `Referer` das requisições |
 | `POSTGRES_DB` | Nome do banco (padrão: `disparos_emive`) |
 | `POSTGRES_USER` | Usuário do banco (padrão: `admin_emive`) |
@@ -129,6 +168,28 @@ a classificação é Baixa abaixo de 4, Média de 4 a 9 e Alta a partir de 10.
 | `DATABASE_URL` | String de conexão usada pela aplicação |
 
 >  **Nunca versione o arquivo `.env`.** Ele contém tokens e senhas e já deve estar listado no `.gitignore`.
+
+Em bancos já inicializados, aplique `init.sql` uma vez antes de iniciar os
+coletores. O Docker executa os scripts de inicialização do PostgreSQL somente
+quando o volume de dados é criado pela primeira vez. Com o serviço PostgreSQL
+ativo, o comando abaixo reaplica o schema e as cargas iniciais idempotentes:
+
+```bash
+docker compose exec -T postgres-db \
+  sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"' < init.sql
+```
+
+Para copiar os 304 mil registros históricos de `analise` do SQLite para o
+PostgreSQL, com o schema já aplicado e o `Database.db` disponível no caminho
+legado, execute uma vez:
+
+```bash
+docker compose --profile migration run --rm migrar-analise-legada
+```
+
+A migração lê o SQLite em modo somente leitura, converte `dia` para `DATE`,
+processa em lotes e ignora IDs já existentes no PostgreSQL. Ela não apaga nem
+altera os registros de origem.
 
 ### Rodando sem Docker (desenvolvimento)
 
@@ -142,6 +203,9 @@ streamlit run src/app.py
 
 # coletor (em outro terminal)
 python -m src.collector
+
+# coleta do relatório agregado (em outro terminal)
+python -m src.alarm_report_collector
 ```
 
 Neste modo, é necessário ter um PostgreSQL acessível e ajustar o `DATABASE_URL` para `localhost`.

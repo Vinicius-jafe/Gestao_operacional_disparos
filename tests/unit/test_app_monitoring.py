@@ -41,10 +41,67 @@ def test_monitoramento_filtra_data_e_intervalo_horario(monkeypatch):
     carteira = pd.DataFrame(
         [{"filial": "FILIAL ALFA", "clientes": 100, "tipo": "FILIAL"}]
     )
+    relatorio_sensores = pd.DataFrame(
+        [
+            {
+                "snapshot_id": 1,
+                "period_start": date(2026, 11, 17),
+                "period_end": date(2026, 11, 24),
+                "collected_at": pd.Timestamp("2026-11-24 12:00:00"),
+                "page_size": 25,
+                "page_count": 1,
+                "total_item_count": 1,
+                "id": 1,
+                "cod_contrato": "ABCD",
+                "empresa": "FILIAL ALFA",
+                "razao_social": "CLIENTE ALFA",
+                "num_contrato": 123,
+                "departamento": "Smart Alarm",
+                "department_id": 4,
+                "department_mapping_confidence": "OFICIAL",
+                "disparos": 3,
+                "message_count": 5,
+                "zona_disparos": "Entrada",
+                "data": date(2026, 11, 24),
+                "mes": 11,
+                "estado": "MG",
+                "modelo_sensor": "PRESENÇA",
+            }
+        ]
+    )
+    outro_contrato = relatorio_sensores.iloc[0].copy()
+    outro_contrato["id"] = 2
+    outro_contrato["num_contrato"] = 456
+    outro_contrato["razao_social"] = "CLIENTE FORA DO HORÁRIO"
+    outro_dia = relatorio_sensores.iloc[0].copy()
+    outro_dia["id"] = 3
+    outro_dia["data"] = date(2026, 11, 23)
+    relatorio_sensores = pd.concat(
+        [
+            relatorio_sensores,
+            pd.DataFrame([outro_contrato, outro_dia]),
+        ],
+        ignore_index=True,
+    )
     database = types.ModuleType("src.database")
     database.verificar_integridade_banco = lambda: None
     database.sincronizar_planilhas = lambda: None
     database.carregar_eventos = lambda: eventos
+    database.carregar_relatorio_sensores = lambda: relatorio_sensores
+    database.carregar_periodos_analise_sensores = lambda: pd.DataFrame(
+        [{"dia": date(2026, 11, 24), "hora_cheia": 12}]
+    )
+    database.carregar_contratos_analise_sensores = (
+        lambda data_analise, hora_analise: pd.DataFrame(
+            [
+                {
+                    "num_contrato": 123,
+                    "departamento": "SMART ALARM",
+                    "estado": "MG",
+                }
+            ]
+        )
+    )
     database.carregar_acompanhamento_diario = lambda inicio, fim, empresas, departamentos: (
         eventos.loc[
             eventos["data_evento"].between(inicio, fim)
@@ -73,6 +130,17 @@ def test_monitoramento_filtra_data_e_intervalo_horario(monkeypatch):
     assert not app.exception
     metricas = {elemento.label: elemento.value for elemento in app.metric}
     assert metricas["Disparos na faixa"] == "1"
+    assert metricas["Registros de contrato/dia"] == "1"
+    assert metricas["Clientes identificados"] == "1"
+    assert metricas["Mensagens no período · API"] == "5"
+    assert next(
+        elemento for elemento in app.date_input if elemento.label == "Data da análise"
+    ).value == date(2026, 11, 24)
+    assert next(
+        elemento
+        for elemento in app.selectbox
+        if elemento.label == "Hora da análise"
+    ).value == 12
 
     seletor_data = next(
         elemento for elemento in app.date_input if elemento.label == "Dia dos eventos"

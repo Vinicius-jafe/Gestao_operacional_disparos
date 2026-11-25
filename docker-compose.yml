@@ -52,5 +52,32 @@ services:
       postgres-db:
         condition: service_healthy
 
+  coletor-relatorio-alarmes:
+    build: .
+    container_name: coletor_relatorio_alarmes_worker
+    restart: unless-stopped
+    command: python -m src.alarm_report_collector
+    environment:
+      TZ: America/Sao_Paulo
+    env_file:
+      - .env
+    volumes:
+      - ./src:/app/src
+    depends_on:
+      postgres-db:
+        condition: service_healthy
+
+  migrar-analise-legada:
+    profiles: ["migration"]
+    build: .
+    command: python -m src.migrate_legacy_analise --sqlite-path /app/legacy/Database.db
+    env_file:
+      - .env
+    volumes:
+      - "./BD DISPAROS/Database.db:/app/legacy/Database.db:ro"
+    depends_on:
+      postgres-db:
+        condition: service_healthy
+
 volumes:
   postgres_data:

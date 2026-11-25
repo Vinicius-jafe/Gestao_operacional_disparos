@@ -1,0 +1,9 @@
+.env
+.git
+.pytest_cache
+__pycache__
+*.py[cod]
+.coverage
+htmlcov
+backup_disparos.dump
+BD DISPAROS/

@@ -180,6 +180,72 @@ def verificar_integridade_banco() -> None:
             "mensagem_erro",
             "data_processamento",
         },
+        "analise": {
+            "id",
+            "id_providencia",
+            "contrato",
+            "numero_contrato",
+            "empresa",
+            "razao_social",
+            "bairro",
+            "cidade",
+            "hora_evento",
+            "departamento",
+            "disparos",
+            "dia",
+            "hora",
+            "hora_cheia",
+            "dia_semana",
+            "periodo",
+            "mes",
+            "estado",
+            "possivel_padrao",
+        },
+        "alarm_report_snapshots": {
+            "id",
+            "period_start",
+            "period_end",
+            "collected_at",
+            "page_size",
+            "page_count",
+            "total_item_count",
+        },
+        "disparos_sensor": {
+            "id",
+            "snapshot_id",
+            "cod_contrato",
+            "empresa",
+            "razao_social",
+            "num_contrato",
+            "departamento",
+            "department_id",
+            "department_mapping_confidence",
+            "disparos",
+            "message_count",
+            "zona_disparos",
+            "data",
+            "mes",
+            "estado",
+            "modelo_sensor",
+        },
+        "vw_analise_disp_sensor": {
+            "id",
+            "id_providencia",
+            "contrato",
+            "numero_contrato",
+            "empresa",
+            "razao_social",
+            "departamento",
+            "estado",
+            "dia",
+            "mes",
+            "hora_cheia",
+            "dia_semana",
+            "periodo",
+            "sensores_no_dia",
+            "zona_referencia_dia",
+            "total_disparos_sensor_dia",
+        },
     }
     consulta_colunas = text("""
         SELECT table_name, column_name
@@ -483,6 +549,187 @@ def sincronizar_dados_api(dados_json: List[dict]) -> int:
 
     logger.info(f"API Ingestao: {linhas_lidas} lidos | {linhas_inseridas} novas linhas gravadas.")
     return linhas_inseridas
+
+
+def salvar_snapshot_relatorio_contratos(
+    period_start: date,
+    period_end: date,
+    page_size: int,
+    page_count: int,
+    total_item_count: int,
+    items: List[dict],
+) -> int:
+    if period_start > period_end:
+        raise ValueError("period_start deve ser anterior ou igual a period_end.")
+    if page_size <= 0 or page_count < 0 or total_item_count < 0:
+        raise ValueError("Metadados de paginação inválidos.")
+    if len(items) != total_item_count:
+        raise ValueError(
+            "Quantidade de itens recebida não corresponde ao total informado pela API."
+        )
+
+    colunas_item = {
+        "cod_contrato",
+        "empresa",
+        "razao_social",
+        "num_contrato",
+        "departamento",
+        "department_id",
+        "department_mapping_confidence",
+        "disparos",
+        "message_count",
+        "zona_disparos",
+        "data",
+        "mes",
+        "estado",
+    }
+    itens_gravacao = []
+    contratos_encontrados = set()
+    for item in items:
+        faltantes = colunas_item.difference(item)
+        if faltantes:
+            raise ValueError(
+                f"Campos ausentes no item do relatório: {sorted(faltantes)}"
+            )
+        num_contrato = item["num_contrato"]
+        if num_contrato in contratos_encontrados:
+            raise ValueError(
+                f"Contrato repetido na mesma coleta: {num_contrato}"
+            )
+        contratos_encontrados.add(num_contrato)
+        if item["data"] != period_end or item["mes"] != period_end.month:
+            raise ValueError(
+                "A data e o mês dos itens devem corresponder ao fim do período."
+            )
+        itens_gravacao.append(dict(item))
+
+    with engine.begin() as conn:
+        snapshot_id = conn.execute(
+            text("""
+                INSERT INTO alarm_report_snapshots (
+                    period_start, period_end, page_size, page_count, total_item_count
+                )
+                VALUES (
+                    :period_start, :period_end, :page_size, :page_count,
+                    :total_item_count
+                )
+                RETURNING id
+            """),
+            {
+                "period_start": period_start,
+                "period_end": period_end,
+                "page_size": page_size,
+                "page_count": page_count,
+                "total_item_count": total_item_count,
+            },
+        ).scalar_one()
+
+        if itens_gravacao:
+            for item in itens_gravacao:
+                item["snapshot_id"] = snapshot_id
+            conn.execute(
+                text("""
+                    INSERT INTO disparos_sensor (
+                        snapshot_id, cod_contrato, empresa, razao_social,
+                        num_contrato, departamento, department_id,
+                        department_mapping_confidence, disparos, message_count,
+                        zona_disparos, data, mes, estado
+                    )
+                    VALUES (
+                        :snapshot_id, :cod_contrato, :empresa, :razao_social,
+                        :num_contrato, :departamento, :department_id,
+                        :department_mapping_confidence, :disparos, :message_count,
+                        :zona_disparos, :data, :mes, :estado
+                    )
+                """),
+                itens_gravacao,
+            )
+
+    return int(snapshot_id)
+
+
+def carregar_relatorio_sensores() -> pd.DataFrame:
+    consulta = text("""
+        WITH snapshots_recentes AS (
+            SELECT
+                DISTINCT ON (period_start, period_end)
+                id,
+                period_start,
+                period_end,
+                collected_at,
+                page_size,
+                page_count,
+                total_item_count
+            FROM alarm_report_snapshots
+            ORDER BY period_start, period_end, collected_at DESC, id DESC
+        )
+        SELECT
+            s.id AS snapshot_id,
+            s.period_start,
+            s.period_end,
+            s.collected_at,
+            s.page_size,
+            s.page_count,
+            s.total_item_count,
+            d.id,
+            d.cod_contrato,
+            d.empresa,
+            d.razao_social,
+            d.num_contrato,
+            d.departamento,
+            d.department_id,
+            d.department_mapping_confidence,
+            d.disparos,
+            d.message_count,
+            d.zona_disparos,
+            d.data,
+            d.mes,
+            d.estado,
+            d.modelo_sensor
+        FROM snapshots_recentes s
+        LEFT JOIN disparos_sensor d ON d.snapshot_id = s.id
+        ORDER BY d.data, d.razao_social NULLS LAST, d.num_contrato
+    """)
+    with engine.connect() as conn:
+        return pd.read_sql(consulta, conn)
+
+
+def carregar_periodos_analise_sensores() -> pd.DataFrame:
+    consulta = text("""
+        SELECT DISTINCT dia, hora_cheia
+        FROM vw_analise_disp_sensor
+        WHERE sensores_no_dia <> 'SEM SENSOR NO DIA'
+          AND hora_cheia BETWEEN 0 AND 23
+        ORDER BY dia, hora_cheia
+    """)
+    with engine.connect() as conn:
+        return pd.read_sql(consulta, conn)
+
+
+def carregar_contratos_analise_sensores(data_analise: date, hora_analise: int) -> pd.DataFrame:
+    if not 0 <= hora_analise <= 23:
+        raise ValueError("hora_analise deve estar entre 0 e 23.")
+
+    consulta = text("""
+        SELECT DISTINCT
+            CASE
+                WHEN TRIM(COALESCE(numero_contrato, '')) ~ '^[0-9]+$'
+                THEN TRIM(numero_contrato)::BIGINT
+            END AS num_contrato,
+            UPPER(TRIM(COALESCE(departamento, ''))) AS departamento,
+            UPPER(TRIM(COALESCE(estado, ''))) AS estado
+        FROM vw_analise_disp_sensor
+        WHERE dia = :data_analise
+          AND hora_cheia = :hora_analise
+          AND sensores_no_dia <> 'SEM SENSOR NO DIA'
+          AND TRIM(COALESCE(numero_contrato, '')) ~ '^[0-9]+$'
+    """)
+    with engine.connect() as conn:
+        return pd.read_sql(
+            consulta,
+            conn,
+            params={"data_analise": data_analise, "hora_analise": hora_analise},
+        )
 
 
 def carregar_eventos(data_inicio: Optional[date] = None, data_fim: Optional[date] = None) -> pd.DataFrame:
