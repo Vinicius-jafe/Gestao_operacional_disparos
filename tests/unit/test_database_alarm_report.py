@@ -85,7 +85,7 @@ def test_salvar_snapshot_rejeita_itens_repetidos(monkeypatch):
     assert connection.executions == []
 
 
-def test_carregar_relatorio_sensores_busca_ultimo_snapshot_de_cada_periodo(
+def test_carregar_relatorio_sensores_consulta_origens_unificadas(
     monkeypatch,
 ):
     chamadas = {}
@@ -105,11 +105,8 @@ def test_carregar_relatorio_sensores_busca_ultimo_snapshot_de_cada_periodo(
     resultado = database.carregar_relatorio_sensores()
 
     assert resultado.empty
-    assert "DISTINCT ON (period_start, period_end)" in chamadas["consulta"]
-    assert "ORDER BY period_start, period_end, collected_at DESC, id DESC" in (
-        chamadas["consulta"]
-    )
-    assert "LIMIT 1" not in chamadas["consulta"]
+    assert "FROM vw_disparos_sensor_unificados" in chamadas["consulta"]
+    assert "origem_sensor" in chamadas["consulta"]
 
 
 def test_carregar_periodos_analise_sensores_retorna_datas_e_horas_com_sensor(
@@ -134,12 +131,9 @@ def test_carregar_periodos_analise_sensores_retorna_datas_e_horas_com_sensor(
     resultado = database.carregar_periodos_analise_sensores()
 
     assert resultado.loc[0, "hora_cheia"] == 12
-    assert "FROM analise a" in chamadas["consulta"]
-    assert "JOIN disparos_sensor ds ON ds.snapshot_id = sr.id" in (
-        chamadas["consulta"]
-    )
-    assert "ds.modelo_sensor NOT IN ('VAZIO', 'SEM ZONA')" in chamadas["consulta"]
-    assert "a.hora_cheia BETWEEN 0 AND 23" in chamadas["consulta"]
+    assert "FROM vw_analise_disp_sensor" in chamadas["consulta"]
+    assert "sensores_no_dia <> 'SEM SENSOR NO DIA'" in chamadas["consulta"]
+    assert "hora_cheia BETWEEN 0 AND 23" in chamadas["consulta"]
 
 
 def test_carregar_contratos_analise_sensores_filtra_data_e_hora(monkeypatch):
@@ -208,8 +202,9 @@ def test_carregar_relatorio_sensores_filtra_datas_horas_e_contratos_no_banco(
         16,
     )
 
-    assert "period_end BETWEEN :data_inicio AND :data_fim" in chamadas["consulta"]
+    assert "FROM vw_disparos_sensor_unificados d" in chamadas["consulta"]
     assert "d.data BETWEEN :data_inicio AND :data_fim" in chamadas["consulta"]
+    assert "d.origem_sensor" in chamadas["consulta"]
     assert "a.dia BETWEEN :data_inicio AND :data_fim" in chamadas["consulta"]
     assert "a.hora_cheia BETWEEN :hora_inicio AND :hora_fim" in chamadas["consulta"]
     assert "EXISTS (" in chamadas["consulta"]

@@ -1694,21 +1694,40 @@ with tab_sensores:
             st.plotly_chart(grafico_horas_analise, width="stretch")
 
             if not dados_sensores.empty:
-                snapshots = dados_sensores.drop_duplicates("snapshot_id")
-                inicio_relatorio = pd.to_datetime(
-                    snapshots["period_start"]
-                ).min().strftime("%d/%m/%Y")
-                fim_relatorio = pd.to_datetime(
-                    snapshots["period_end"]
-                ).max().strftime("%d/%m/%Y")
-                ultima_carga = pd.to_datetime(
-                    snapshots["collected_at"]
-                ).max().strftime("%d/%m/%Y às %H:%M")
-                st.caption(
-                    f"Snapshots relacionados: {len(snapshots)} · "
-                    f"janela coletada: {inicio_relatorio}–{fim_relatorio} · "
-                    f"última carga: {ultima_carga}"
-                )
+                sensores_api = dados_sensores.loc[
+                    dados_sensores["origem_sensor"] == "API"
+                ]
+                if not sensores_api.empty:
+                    snapshots = sensores_api.drop_duplicates("snapshot_id")
+                    inicio_relatorio = pd.to_datetime(
+                        snapshots["period_start"]
+                    ).min().strftime("%d/%m/%Y")
+                    fim_relatorio = pd.to_datetime(
+                        snapshots["period_end"]
+                    ).max().strftime("%d/%m/%Y")
+                    ultima_carga = pd.to_datetime(
+                        snapshots["collected_at"]
+                    ).max().strftime("%d/%m/%Y às %H:%M")
+                    st.caption(
+                        f"Snapshots da API: {len(snapshots)} · "
+                        f"janela coletada: {inicio_relatorio}–{fim_relatorio} · "
+                        f"última carga: {ultima_carga}"
+                    )
+
+                sensores_sqlite = dados_sensores.loc[
+                    dados_sensores["origem_sensor"] == "SQLITE"
+                ]
+                if not sensores_sqlite.empty:
+                    inicio_historico = pd.to_datetime(
+                        sensores_sqlite["data"]
+                    ).min().strftime("%d/%m/%Y")
+                    fim_historico = pd.to_datetime(
+                        sensores_sqlite["data"]
+                    ).max().strftime("%d/%m/%Y")
+                    st.caption(
+                        f"Histórico migrado do SQLite: "
+                        f"{inicio_historico}–{fim_historico}"
+                    )
 
         if dados_sensores.empty:
             st.info(
@@ -1878,8 +1897,9 @@ with tab_sensores:
                         )
                 st.caption(
                     "A classificação do modelo é estimada pelo texto da zona. "
-                    "A contagem por zona usa `triggerCount` quando disponível e "
-                    "`messageCount` como alternativa; não representa necessariamente "
+                    "A contagem reportada preserva o valor de cada origem: "
+                    "a API usa `triggerCount` ou `messageCount`, e o SQLite mantém "
+                    "a contagem histórica original. Ela não representa necessariamente "
                     "o total de disparos de todos os sensores do contrato."
                 )
 
@@ -1898,6 +1918,7 @@ with tab_sensores:
                         "modelo_sensor": "MODELO",
                         "estado": "UF",
                         "department_mapping_confidence": "CONFIANÇA DEPARTAMENTO",
+                        "origem_sensor": "ORIGEM",
                     }
                 )
                 colunas_tabela = [
@@ -1914,6 +1935,7 @@ with tab_sensores:
                     "MENSAGENS API",
                     "UF",
                     "CONFIANÇA DEPARTAMENTO",
+                    "ORIGEM",
                 ]
                 st.dataframe(
                     tabela_sensores[colunas_tabela],

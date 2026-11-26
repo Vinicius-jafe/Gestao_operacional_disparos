@@ -58,7 +58,9 @@ O `docker-compose.yml` sobe três serviços:
 | `disparos_eventos` | Eventos de disparo (contrato, cliente, empresa, departamento, data/hora e campos derivados como `ano_mes` e `final_de_semana`) |
 | `analise` | Histórico diário importado do banco SQLite legado |
 | `alarm_report_snapshots` | Metadados de cada coleta do relatório agregado de contratos |
-| `disparos_sensor` | Top zona e contagens aproximadas por contrato e snapshot, com classificação gerada do modelo |
+| `disparos_sensor` | Top zona e contagens aproximadas por contrato e snapshot coletados pela API |
+| `disparos_sensor_legado` | Nomes, zonas e contagens de sensores migrados do SQLite legado |
+| `vw_disparos_sensor_unificados` | Sensores da API e do SQLite, sem duplicar o mesmo contrato/data |
 | `vw_analise_disp_sensor` | View que relaciona o histórico diário com o último snapshot de cada período consultado |
 | `carteira_filiais` | Quantidade de clientes por filial/núcleo, usada para calcular proporções |
 | `arquivos_processados` | Controle de importações (nome, hash, status, linhas lidas/inseridas, erro) |
@@ -79,9 +81,10 @@ coleta horária pode gerar cerca de 198 mil linhas por dia; não há expurgo
 automático de snapshots.
 
 A aba **Sensores** combina o snapshot mais recente de cada período, incluindo os
-registros históricos diários importados, e mostra registros por modelo, zonas
-principais e contagens por cliente. A tabela exibe a data de cada registro; para
-os snapshots do endpoint agregado, ela representa o fim da janela consultada.
+registros históricos de sensores migrados do SQLite, e mostra registros por
+modelo, zonas principais e contagens por cliente. A tabela exibe a origem e a
+data de cada registro; para os snapshots do endpoint agregado, ela representa o
+fim da janela consultada.
 Os filtros de período e faixa horária usam `analise.dia` e
 `analise.hora_cheia`; por padrão, a aba mostra os últimos sete dias disponíveis
 e a faixa completa de 00:00 a 23:00. Os intervalos são inclusivos e podem ser
@@ -212,6 +215,19 @@ docker compose --profile migration run --rm migrar-analise-legada
 A migração lê o SQLite em modo somente leitura, converte `dia` para `DATE`,
 processa em lotes e ignora IDs já existentes no PostgreSQL. Ela não apaga nem
 altera os registros de origem.
+
+Para copiar também o histórico de nomes e zonas dos sensores da tabela
+`disparos_sensor` do mesmo SQLite:
+
+```bash
+docker compose --profile migration run --rm migrar-sensores-legados
+```
+
+Os registros são mantidos em `disparos_sensor_legado`, sem substituir a tabela
+usada pelo coletor da API nem alterar `disparos_eventos`. A aba **Sensores**
+combina as duas origens, priorizando a coleta da API quando houver o mesmo
+contrato e data. A migração pode ser repetida e atualiza os registros pelo ID
+original do SQLite.
 
 ### Rodando sem Docker (desenvolvimento)
 

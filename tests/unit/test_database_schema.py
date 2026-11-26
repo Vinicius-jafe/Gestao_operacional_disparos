@@ -81,6 +81,45 @@ SCHEMA_EXISTENTE = {
         "estado",
         "modelo_sensor",
     },
+    "disparos_sensor_legado": {
+        "id",
+        "cod_contrato",
+        "empresa",
+        "razao_social",
+        "num_contrato",
+        "departamento",
+        "disparos",
+        "zona_disparos",
+        "data",
+        "mes",
+        "estado",
+        "modelo_sensor",
+    },
+    "vw_disparos_sensor_unificados": {
+        "snapshot_id",
+        "period_start",
+        "period_end",
+        "collected_at",
+        "page_size",
+        "page_count",
+        "total_item_count",
+        "id",
+        "cod_contrato",
+        "empresa",
+        "razao_social",
+        "num_contrato",
+        "departamento",
+        "department_id",
+        "department_mapping_confidence",
+        "disparos",
+        "message_count",
+        "zona_disparos",
+        "data",
+        "mes",
+        "estado",
+        "modelo_sensor",
+        "origem_sensor",
+    },
     "vw_analise_disp_sensor": {
         "id",
         "id_providencia",
@@ -117,7 +156,10 @@ class FakeResult:
 class FakeConnection:
     def __init__(self, columns, indexes=None):
         self.columns = columns
-        self.indexes = indexes if indexes is not None else {"idx_analise_dia_hora"}
+        self.indexes = indexes if indexes is not None else {
+            "idx_analise_dia_hora",
+            "idx_disparos_sensor_legado_data_contrato",
+        }
         self.statements = []
 
     def execute(self, statement, params=None):
@@ -136,7 +178,12 @@ class FakeConnection:
                 ]
             )
         if "FROM pg_indexes" in sql:
-            assert params == {"index_names": ["idx_analise_dia_hora"]}
+            assert params == {
+                "index_names": [
+                    "idx_analise_dia_hora",
+                    "idx_disparos_sensor_legado_data_contrato",
+                ]
+            }
             return FakeResult([(index,) for index in sorted(self.indexes)])
         if sql.strip().upper() == "SELECT COUNT(*) FROM CARTEIRA_FILIAIS":
             return FakeResult(scalar=1)

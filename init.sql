@@ -140,6 +140,67 @@ CREATE TABLE IF NOT EXISTS disparos_sensor (
     CHECK (message_count >= 0)
 );
 
+CREATE TABLE IF NOT EXISTS disparos_sensor_legado (
+    id BIGINT PRIMARY KEY,
+    cod_contrato TEXT,
+    empresa TEXT,
+    razao_social TEXT,
+    num_contrato BIGINT,
+    departamento TEXT,
+    disparos INTEGER,
+    zona_disparos TEXT,
+    data DATE,
+    mes INTEGER,
+    estado VARCHAR(4),
+    modelo_sensor TEXT GENERATED ALWAYS AS (
+        CASE
+            WHEN zona_disparos IS NULL OR BTRIM(zona_disparos) = ''
+                THEN 'VAZIO'
+            WHEN UPPER(zona_disparos) LIKE '%BOTAO DE PANICO%'
+              OR UPPER(zona_disparos) LIKE '%BOTÃO DE PÂNICO%'
+              OR UPPER(zona_disparos) LIKE '%BPNA%'
+              OR UPPER(zona_disparos) LIKE '%TRANSMISSOR%'
+              OR UPPER(zona_disparos) LIKE '%TRANSMISSORES%'
+              OR UPPER(zona_disparos) LIKE '%CONTROLES%'
+              OR UPPER(zona_disparos) LIKE '%CONTROLE%'
+                THEN 'BPNA'
+            WHEN UPPER(zona_disparos) LIKE '%PRESENCA%'
+              OR UPPER(zona_disparos) LIKE '%PRESENÇA%'
+              OR UPPER(zona_disparos) LIKE '%RK%'
+              OR UPPER(zona_disparos) LIKE '%RKS%'
+              OR UPPER(zona_disparos) LIKE '%IVP%'
+              OR UPPER(zona_disparos) LIKE '%IVPS%'
+              OR UPPER(zona_disparos) LIKE '%BVS%'
+              OR UPPER(zona_disparos) LIKE '%BV%'
+              OR UPPER(zona_disparos) LIKE '%INFRA INTERNO%'
+                THEN 'PRESENÇA'
+            WHEN UPPER(zona_disparos) LIKE '%MAGNETICO%'
+              OR UPPER(zona_disparos) LIKE '%MAGNÉTICO%'
+              OR UPPER(zona_disparos) LIKE '%MAGNÉTICOS%'
+              OR UPPER(zona_disparos) LIKE '%MAG%'
+              OR UPPER(zona_disparos) LIKE '%FM%'
+              OR UPPER(zona_disparos) LIKE '%TW%'
+              OR UPPER(zona_disparos) LIKE '%JANELA%'
+              OR UPPER(zona_disparos) LIKE '%JANELAS%'
+              OR UPPER(zona_disparos) LIKE '%PORTAO%'
+              OR UPPER(zona_disparos) LIKE '%PORTOES%'
+              OR UPPER(zona_disparos) LIKE '%PORTÃO%'
+              OR UPPER(zona_disparos) LIKE '%PORTÕES%'
+                THEN 'MAGNÉTICO'
+            WHEN UPPER(zona_disparos) LIKE '%IVA%'
+              OR UPPER(zona_disparos) LIKE '%INFRAVERMELHO%'
+              OR UPPER(zona_disparos) LIKE '%IVAS%'
+              OR UPPER(zona_disparos) LIKE '%BARREIRA%'
+              OR UPPER(zona_disparos) LIKE '%MURO%'
+              OR UPPER(zona_disparos) LIKE '%INFRA EXTERNO%'
+                THEN 'IVA'
+            WHEN UPPER(zona_disparos) LIKE '%CERCA%' THEN 'CERCA'
+            WHEN UPPER(zona_disparos) LIKE '%SEM ZONA%' THEN 'SEM ZONA'
+            ELSE 'OUTRO / LOCAL'
+        END
+    ) STORED
+);
+
 -- Índices essenciais para consultas rápidas
 CREATE INDEX IF NOT EXISTS idx_disparos_empresa ON disparos_eventos (empresa);
 CREATE INDEX IF NOT EXISTS idx_disparos_departamento ON disparos_eventos (departamento);
@@ -152,15 +213,95 @@ CREATE INDEX IF NOT EXISTS idx_alarm_report_snapshots_collected_at
     ON alarm_report_snapshots (collected_at);
 CREATE INDEX IF NOT EXISTS idx_disparos_sensor_snapshot_department
     ON disparos_sensor (snapshot_id, department_id, data);
+CREATE INDEX IF NOT EXISTS idx_disparos_sensor_legado_data_contrato
+    ON disparos_sensor_legado (data, num_contrato, cod_contrato);
 
-CREATE OR REPLACE VIEW vw_analise_disp_sensor AS
+CREATE OR REPLACE VIEW vw_disparos_sensor_unificados AS
 WITH snapshots_recentes AS (
     SELECT DISTINCT ON (period_start, period_end)
-        id
+        id,
+        period_start,
+        period_end,
+        collected_at,
+        page_size,
+        page_count,
+        total_item_count
     FROM alarm_report_snapshots
     ORDER BY period_start, period_end, collected_at DESC, id DESC
 ),
-sensor_agrupado AS (
+sensores_api AS (
+    SELECT
+        s.id AS snapshot_id,
+        s.period_start,
+        s.period_end,
+        s.collected_at,
+        s.page_size,
+        s.page_count,
+        s.total_item_count,
+        d.id,
+        d.cod_contrato,
+        d.empresa,
+        d.razao_social,
+        d.num_contrato,
+        d.departamento,
+        d.department_id,
+        d.department_mapping_confidence,
+        d.disparos,
+        d.message_count,
+        d.zona_disparos,
+        d.data,
+        d.mes,
+        d.estado,
+        d.modelo_sensor,
+        'API'::TEXT AS origem_sensor
+    FROM snapshots_recentes s
+    JOIN disparos_sensor d ON d.snapshot_id = s.id
+),
+sensores_sqlite AS (
+    SELECT
+        NULL::BIGINT AS snapshot_id,
+        l.data AS period_start,
+        l.data AS period_end,
+        NULL::TIMESTAMPTZ AS collected_at,
+        NULL::INTEGER AS page_size,
+        NULL::INTEGER AS page_count,
+        NULL::INTEGER AS total_item_count,
+        l.id,
+        l.cod_contrato,
+        l.empresa,
+        l.razao_social,
+        l.num_contrato,
+        l.departamento,
+        NULL::INTEGER AS department_id,
+        NULL::VARCHAR AS department_mapping_confidence,
+        l.disparos,
+        NULL::INTEGER AS message_count,
+        l.zona_disparos,
+        l.data,
+        l.mes,
+        l.estado,
+        l.modelo_sensor,
+        'SQLITE'::TEXT AS origem_sensor
+    FROM disparos_sensor_legado l
+    WHERE NOT EXISTS (
+        SELECT 1
+        FROM sensores_api api
+        WHERE api.data = l.data
+          AND api.num_contrato = l.num_contrato
+          AND UPPER(TRIM(COALESCE(api.cod_contrato, ''))) =
+              UPPER(TRIM(COALESCE(l.cod_contrato, '')))
+          AND UPPER(TRIM(COALESCE(api.departamento, ''))) =
+              UPPER(TRIM(COALESCE(l.departamento, '')))
+          AND UPPER(TRIM(COALESCE(api.estado, ''))) =
+              UPPER(TRIM(COALESCE(l.estado, '')))
+    )
+)
+SELECT * FROM sensores_api
+UNION ALL
+SELECT * FROM sensores_sqlite;
+
+CREATE OR REPLACE VIEW vw_analise_disp_sensor AS
+WITH sensor_agrupado AS (
     SELECT
         TRIM(ds.cod_contrato) AS cod_contrato,
         ds.num_contrato,
@@ -170,8 +311,7 @@ sensor_agrupado AS (
         ds.modelo_sensor,
         MAX(ds.zona_disparos) AS zona_disparos,
         SUM(ds.disparos) AS qtd_modelo
-    FROM disparos_sensor ds
-    JOIN snapshots_recentes sr ON sr.id = ds.snapshot_id
+    FROM vw_disparos_sensor_unificados ds
     WHERE ds.modelo_sensor NOT IN ('VAZIO', 'SEM ZONA')
     GROUP BY
         TRIM(ds.cod_contrato),

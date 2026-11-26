@@ -35,13 +35,18 @@ ANALISE_COLUMNS = (
 )
 
 
-def _parse_data_legada(value: Any) -> date:
+def _parse_data_legada(
+    value: Any,
+    *,
+    tabela: str = "analise",
+    coluna: str = "dia",
+) -> date:
     if isinstance(value, datetime):
         return value.date()
     if isinstance(value, date):
         return value
     if value is None:
-        raise ValueError("A tabela analise contém um dia vazio.")
+        raise ValueError(f"A tabela {tabela} contém {coluna} vazio.")
 
     raw_value = str(value).strip()
     for date_format in ("%d/%m/%Y", "%d/%m/%y", "%Y-%m-%d"):
@@ -49,7 +54,9 @@ def _parse_data_legada(value: Any) -> date:
             return datetime.strptime(raw_value, date_format).date()
         except ValueError:
             continue
-    raise ValueError("A tabela analise contém um dia em formato não reconhecido.")
+    raise ValueError(
+        f"A tabela {tabela} contém {coluna} em formato não reconhecido."
+    )
 
 
 def _normalizar_registro(row: sqlite3.Row) -> dict:

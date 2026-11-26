@@ -4,10 +4,18 @@ from datetime import date, time, timedelta
 from pathlib import Path
 
 import pandas as pd
+import pytest
+import streamlit as st
 from streamlit.testing.v1 import AppTest
 
 
-def test_monitoramento_filtra_data_e_intervalo_horario(monkeypatch):
+@pytest.mark.parametrize(
+    ("origem_sensor", "mensagens_esperadas"),
+    [("API", "5"), ("SQLITE", "0")],
+)
+def test_monitoramento_filtra_data_e_intervalo_horario(
+    monkeypatch, origem_sensor, mensagens_esperadas
+):
     data_hoje = date.today()
     data_anterior = data_hoje - timedelta(days=1)
     eventos = pd.DataFrame(
@@ -66,9 +74,22 @@ def test_monitoramento_filtra_data_e_intervalo_horario(monkeypatch):
                 "mes": 11,
                 "estado": "MG",
                 "modelo_sensor": "PRESENÇA",
+                "origem_sensor": "API",
             }
         ]
     )
+    relatorio_sensores.loc[0, "origem_sensor"] = origem_sensor
+    if origem_sensor == "SQLITE":
+        relatorio_sensores.loc[0, "snapshot_id"] = None
+        relatorio_sensores.loc[0, "period_start"] = date(2026, 11, 24)
+        relatorio_sensores.loc[0, "period_end"] = date(2026, 11, 24)
+        relatorio_sensores.loc[0, "collected_at"] = pd.NaT
+        relatorio_sensores.loc[0, "page_size"] = None
+        relatorio_sensores.loc[0, "page_count"] = None
+        relatorio_sensores.loc[0, "total_item_count"] = None
+        relatorio_sensores.loc[0, "department_id"] = None
+        relatorio_sensores.loc[0, "department_mapping_confidence"] = None
+        relatorio_sensores.loc[0, "message_count"] = None
     outro_contrato = relatorio_sensores.iloc[0].copy()
     outro_contrato["id"] = 2
     outro_contrato["num_contrato"] = 456
@@ -196,6 +217,7 @@ def test_monitoramento_filtra_data_e_intervalo_horario(monkeypatch):
     database.salvar_carteira = lambda _: None
     monkeypatch.setitem(sys.modules, "src.database", database)
 
+    st.cache_data.clear()
     app = AppTest.from_file(
         str(Path(__file__).parents[2] / "src" / "app.py")
     ).run(timeout=10)
@@ -204,7 +226,7 @@ def test_monitoramento_filtra_data_e_intervalo_horario(monkeypatch):
     assert metricas["Disparos na faixa"] == "1"
     assert metricas["Registros de contrato/dia"] == "1"
     assert metricas["Clientes identificados"] == "1"
-    assert metricas["Mensagens no período · API"] == "5"
+    assert metricas["Mensagens no período · API"] == mensagens_esperadas
     seletor_periodo_sensor = next(
         elemento
         for elemento in app.date_input

@@ -295,6 +295,45 @@ def verificar_integridade_banco() -> None:
             "estado",
             "modelo_sensor",
         },
+        "disparos_sensor_legado": {
+            "id",
+            "cod_contrato",
+            "empresa",
+            "razao_social",
+            "num_contrato",
+            "departamento",
+            "disparos",
+            "zona_disparos",
+            "data",
+            "mes",
+            "estado",
+            "modelo_sensor",
+        },
+        "vw_disparos_sensor_unificados": {
+            "snapshot_id",
+            "period_start",
+            "period_end",
+            "collected_at",
+            "page_size",
+            "page_count",
+            "total_item_count",
+            "id",
+            "cod_contrato",
+            "empresa",
+            "razao_social",
+            "num_contrato",
+            "departamento",
+            "department_id",
+            "department_mapping_confidence",
+            "disparos",
+            "message_count",
+            "zona_disparos",
+            "data",
+            "mes",
+            "estado",
+            "modelo_sensor",
+            "origem_sensor",
+        },
         "vw_analise_disp_sensor": {
             "id",
             "id_providencia",
@@ -320,7 +359,10 @@ def verificar_integridade_banco() -> None:
         WHERE table_schema = current_schema()
           AND table_name IN :table_names
     """).bindparams(bindparam("table_names", expanding=True))
-    indices_esperados = {"idx_analise_dia_hora"}
+    indices_esperados = {
+        "idx_analise_dia_hora",
+        "idx_disparos_sensor_legado_data_contrato",
+    }
     consulta_indices = text("""
         SELECT indexname
         FROM pg_indexes
@@ -738,45 +780,32 @@ def salvar_snapshot_relatorio_contratos(
 
 def carregar_relatorio_sensores() -> pd.DataFrame:
     consulta = text("""
-        WITH snapshots_recentes AS (
-            SELECT
-                DISTINCT ON (period_start, period_end)
-                id,
-                period_start,
-                period_end,
-                collected_at,
-                page_size,
-                page_count,
-                total_item_count
-            FROM alarm_report_snapshots
-            ORDER BY period_start, period_end, collected_at DESC, id DESC
-        )
         SELECT
-            s.id AS snapshot_id,
-            s.period_start,
-            s.period_end,
-            s.collected_at,
-            s.page_size,
-            s.page_count,
-            s.total_item_count,
-            d.id,
-            d.cod_contrato,
-            d.empresa,
-            d.razao_social,
-            d.num_contrato,
-            d.departamento,
-            d.department_id,
-            d.department_mapping_confidence,
-            d.disparos,
-            d.message_count,
-            d.zona_disparos,
-            d.data,
-            d.mes,
-            d.estado,
-            d.modelo_sensor
-        FROM snapshots_recentes s
-        LEFT JOIN disparos_sensor d ON d.snapshot_id = s.id
-        ORDER BY d.data, d.razao_social NULLS LAST, d.num_contrato
+            snapshot_id,
+            period_start,
+            period_end,
+            collected_at,
+            page_size,
+            page_count,
+            total_item_count,
+            id,
+            cod_contrato,
+            empresa,
+            razao_social,
+            num_contrato,
+            departamento,
+            department_id,
+            department_mapping_confidence,
+            disparos,
+            message_count,
+            zona_disparos,
+            data,
+            mes,
+            estado,
+            modelo_sensor,
+            origem_sensor
+        FROM vw_disparos_sensor_unificados
+        ORDER BY data, razao_social NULLS LAST, num_contrato
     """)
     with engine.connect() as conn:
         return _read_sql(consulta, conn, nome="relatorio_sensores")
@@ -784,31 +813,11 @@ def carregar_relatorio_sensores() -> pd.DataFrame:
 
 def carregar_periodos_analise_sensores() -> pd.DataFrame:
     consulta = text("""
-        WITH snapshots_recentes AS (
-            SELECT DISTINCT ON (period_start, period_end) id
-            FROM alarm_report_snapshots
-            ORDER BY period_start, period_end, collected_at DESC, id DESC
-        )
-        SELECT DISTINCT a.dia, a.hora_cheia
-        FROM analise a
-        WHERE a.hora_cheia BETWEEN 0 AND 23
-          AND EXISTS (
-              SELECT 1
-              FROM snapshots_recentes sr
-              JOIN disparos_sensor ds ON ds.snapshot_id = sr.id
-              WHERE ds.data = a.dia
-                AND ds.num_contrato = CASE
-                    WHEN TRIM(COALESCE(a.numero_contrato, '')) ~ '^[0-9]+$'
-                    THEN TRIM(a.numero_contrato)::BIGINT
-                END
-                AND TRIM(ds.cod_contrato) = TRIM(COALESCE(a.contrato, ''))
-                AND UPPER(TRIM(COALESCE(ds.departamento, ''))) =
-                    UPPER(TRIM(COALESCE(a.departamento, '')))
-                AND UPPER(TRIM(COALESCE(ds.estado, ''))) =
-                    UPPER(TRIM(COALESCE(a.estado, '')))
-                AND ds.modelo_sensor NOT IN ('VAZIO', 'SEM ZONA')
-          )
-        ORDER BY a.dia, a.hora_cheia
+        SELECT DISTINCT dia, hora_cheia
+        FROM vw_analise_disp_sensor
+        WHERE hora_cheia BETWEEN 0 AND 23
+          AND sensores_no_dia <> 'SEM SENSOR NO DIA'
+        ORDER BY dia, hora_cheia
     """)
     with engine.connect() as conn:
         return _read_sql(consulta, conn, nome="periodos_analise_sensores")
@@ -882,27 +891,14 @@ def carregar_relatorio_sensores_periodo(
 ) -> pd.DataFrame:
     _validar_intervalo_sensores(data_inicio, data_fim, hora_inicio, hora_fim)
     consulta = text("""
-        WITH snapshots_recentes AS (
-            SELECT DISTINCT ON (period_start, period_end)
-                id,
-                period_start,
-                period_end,
-                collected_at,
-                page_size,
-                page_count,
-                total_item_count
-            FROM alarm_report_snapshots
-            WHERE period_end BETWEEN :data_inicio AND :data_fim
-            ORDER BY period_start, period_end, collected_at DESC, id DESC
-        )
         SELECT
-            s.id AS snapshot_id,
-            s.period_start,
-            s.period_end,
-            s.collected_at,
-            s.page_size,
-            s.page_count,
-            s.total_item_count,
+            d.snapshot_id,
+            d.period_start,
+            d.period_end,
+            d.collected_at,
+            d.page_size,
+            d.page_count,
+            d.total_item_count,
             d.id,
             d.cod_contrato,
             d.empresa,
@@ -917,9 +913,9 @@ def carregar_relatorio_sensores_periodo(
             d.data,
             d.mes,
             d.estado,
-            d.modelo_sensor
-        FROM snapshots_recentes s
-        JOIN disparos_sensor d ON d.snapshot_id = s.id
+            d.modelo_sensor,
+            d.origem_sensor
+        FROM vw_disparos_sensor_unificados d
         WHERE d.data BETWEEN :data_inicio AND :data_fim
           AND EXISTS (
               SELECT 1

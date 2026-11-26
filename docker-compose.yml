@@ -79,5 +79,17 @@ services:
       postgres-db:
         condition: service_healthy
 
+  migrar-sensores-legados:
+    profiles: ["migration"]
+    build: .
+    command: python -m src.migrate_legacy_sensors --sqlite-path /app/legacy/Database.db
+    env_file:
+      - .env
+    volumes:
+      - "./BD DISPAROS/Database.db:/app/legacy/Database.db:ro"
+    depends_on:
+      postgres-db:
+        condition: service_healthy
+
 volumes:
   postgres_data:
