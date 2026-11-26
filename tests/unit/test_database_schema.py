@@ -115,8 +115,9 @@ class FakeResult:
 
 
 class FakeConnection:
-    def __init__(self, columns):
+    def __init__(self, columns, indexes=None):
         self.columns = columns
+        self.indexes = indexes if indexes is not None else {"idx_analise_dia_hora"}
         self.statements = []
 
     def execute(self, statement, params=None):
@@ -134,6 +135,9 @@ class FakeConnection:
                     for coluna in colunas
                 ]
             )
+        if "FROM pg_indexes" in sql:
+            assert params == {"index_names": ["idx_analise_dia_hora"]}
+            return FakeResult([(index,) for index in sorted(self.indexes)])
         if sql.strip().upper() == "SELECT COUNT(*) FROM CARTEIRA_FILIAIS":
             return FakeResult(scalar=1)
         raise AssertionError(f"Consulta inesperada: {sql}")
@@ -154,9 +158,10 @@ def test_verificar_integridade_consulta_schema_sem_executar_ddl(monkeypatch):
 
     database.verificar_integridade_banco()
 
-    assert len(connection.statements) == 2
+    assert len(connection.statements) == 3
     assert "information_schema.columns" in connection.statements[0]
-    assert connection.statements[1].strip().upper() == (
+    assert "FROM pg_indexes" in connection.statements[1]
+    assert connection.statements[2].strip().upper() == (
         "SELECT COUNT(*) FROM CARTEIRA_FILIAIS"
     )
 
@@ -175,3 +180,13 @@ def test_verificar_integridade_falha_explicitamente_com_schema_incompleto(
         database.verificar_integridade_banco()
 
     assert len(connection.statements) == 1
+
+
+def test_verificar_integridade_exige_indice_de_data_e_hora(monkeypatch):
+    connection = FakeConnection(SCHEMA_EXISTENTE, indexes=set())
+    monkeypatch.setattr(database, "engine", FakeEngine(connection))
+
+    with pytest.raises(RuntimeError, match="idx_analise_dia_hora"):
+        database.verificar_integridade_banco()
+
+    assert len(connection.statements) == 2

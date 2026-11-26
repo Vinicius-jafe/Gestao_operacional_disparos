@@ -1,6 +1,8 @@
 import calendar
 from datetime import date, time, timedelta
 import io
+import logging
+import time as time_module
 
 import pandas as pd
 import plotly.express as px
@@ -8,10 +10,16 @@ import streamlit as st
 
 from src.database import (
     carregar_acompanhamento_diario,
-    carregar_contratos_analise_sensores,
+    carregar_alertas_mau_uso,
+    carregar_comparacao_disparos_mensais,
+    carregar_distribuicao_horaria_analise_sensores,
     carregar_eventos,
-    carregar_periodos_analise_sensores,
-    carregar_relatorio_sensores,
+    carregar_intervalo_eventos,
+    carregar_intervalo_analise_sensores,
+    carregar_limitadores,
+    carregar_meses_eventos,
+    carregar_opcoes_eventos,
+    carregar_relatorio_sensores_periodo,
     normalizar_nome_filial,
     obter_carteira_df,
     obter_carteira_filiais_dict,
@@ -26,15 +34,27 @@ from src.metrics import (
     calcular_metricas_filiais,
     calcular_recorrencia_complementar,
     calcular_taxa_por_carteira,
-    comparar_disparos_mensais,
-    detectar_limitador,
-    detectar_possivel_mau_uso,
     filtrar_por_periodos_horarios,
     preparar_serie_diaria,
     processar_reincidencia_clientes,
 )
 from src.presentation import incluir_cod_contrato
 from src.prediction import calcular_previsoes
+
+
+logger = logging.getLogger(__name__)
+_render_inicio = time_module.perf_counter()
+
+
+def medir_processamento(nome: str, funcao, *args, **kwargs):
+    inicio = time_module.perf_counter()
+    resultado = funcao(*args, **kwargs)
+    logger.info(
+        "Desempenho app [%s]: processamento=%.1f ms",
+        nome,
+        (time_module.perf_counter() - inicio) * 1000,
+    )
+    return resultado
 
 
 st.set_page_config(
@@ -198,8 +218,147 @@ except Exception as erro:
 
 
 @st.cache_data(ttl=60)
-def obter_dados_painel():
-    return carregar_eventos(), obter_carteira_df(), obter_carteira_filiais_dict()
+def obter_opcoes_eventos():
+    return carregar_opcoes_eventos()
+
+
+@st.cache_data(ttl=60)
+def obter_dados_carteira():
+    return obter_carteira_df(), obter_carteira_filiais_dict()
+
+
+@st.cache_data(ttl=60)
+def obter_meses_eventos(
+    empresas: tuple[str, ...],
+    departamentos: tuple[str, ...],
+) -> list[str]:
+    return carregar_meses_eventos(list(empresas), list(departamentos))
+
+
+@st.cache_data(ttl=60)
+def obter_intervalo_eventos(
+    empresas: tuple[str, ...],
+    departamentos: tuple[str, ...],
+    data_limite: date | None = None,
+) -> tuple[date | None, date | None]:
+    return carregar_intervalo_eventos(
+        list(empresas),
+        list(departamentos),
+        data_limite,
+    )
+
+
+@st.cache_data(ttl=60)
+def obter_eventos(
+    data_inicio: date | None,
+    data_fim: date | None,
+    empresas: tuple[str, ...],
+    departamentos: tuple[str, ...],
+    ano_mes: str | None = None,
+) -> pd.DataFrame:
+    return carregar_eventos(
+        data_inicio,
+        data_fim,
+        list(empresas),
+        list(departamentos),
+        ano_mes=ano_mes,
+    )
+
+
+@st.cache_data(ttl=60)
+def obter_eventos_monitoramento(
+    data_evento: date,
+    minuto_inicio: int,
+    minuto_fim: int,
+    empresas: tuple[str, ...],
+    departamentos: tuple[str, ...],
+) -> pd.DataFrame:
+    return carregar_eventos(
+        data_evento,
+        data_evento,
+        list(empresas),
+        list(departamentos),
+        minuto_inicio=minuto_inicio,
+        minuto_fim=minuto_fim,
+    )
+
+
+@st.cache_data(ttl=60)
+def obter_comparacao_disparos_mensais(
+    empresas: tuple[str, ...],
+    departamentos: tuple[str, ...],
+) -> pd.DataFrame:
+    return carregar_comparacao_disparos_mensais(
+        list(empresas),
+        list(departamentos),
+    )
+
+
+@st.cache_data(ttl=60)
+def obter_alertas_mau_uso() -> pd.DataFrame:
+    return carregar_alertas_mau_uso()
+
+
+@st.cache_data(ttl=60)
+def obter_limitadores() -> pd.DataFrame:
+    return carregar_limitadores()
+
+
+@st.cache_data(ttl=60)
+def obter_reincidencia(
+    data_inicio: date | None,
+    data_fim: date | None,
+    ano_mes: str | None,
+    empresas: tuple[str, ...],
+    departamentos: tuple[str, ...],
+    categoria: str,
+) -> pd.DataFrame:
+    eventos = obter_eventos(
+        data_inicio,
+        data_fim,
+        empresas,
+        departamentos,
+        ano_mes,
+    )
+    if categoria == "smart":
+        eventos = eventos[
+            eventos["departamento"].str.upper().str.contains("SMART", na=False)
+        ]
+    elif categoria == "outros":
+        eventos = eventos[
+            ~eventos["departamento"].str.upper().str.contains("SMART", na=False)
+        ]
+    return medir_processamento(
+        f"reincidencia_{categoria}",
+        processar_reincidencia_clientes,
+        eventos,
+    )
+
+
+@st.cache_data(ttl=60)
+def obter_previsoes(
+    data_inicio: date,
+    data_fim: date,
+    hoje: date,
+    empresas: tuple[str, ...],
+    departamentos: tuple[str, ...],
+    periodos_selecionados: tuple[str, ...],
+    modo_periodos: str,
+) -> pd.DataFrame:
+    eventos = obter_eventos(data_inicio, data_fim, empresas, departamentos)
+    inicio = time_module.perf_counter()
+    resultado = calcular_previsoes(
+        eventos,
+        hoje,
+        periodos_selecionados=periodos_selecionados,
+        modo_periodos=modo_periodos,
+    )
+    logger.info(
+        "Desempenho app [previsoes]: processamento=%.1f ms; linhas=%s",
+        (time_module.perf_counter() - inicio) * 1000,
+        len(resultado),
+    )
+    return resultado
 
 
 @st.cache_data(ttl=60)
@@ -218,29 +377,48 @@ def obter_dados_acompanhamento(
 
 
 @st.cache_data(ttl=60)
-def obter_relatorio_sensores() -> pd.DataFrame:
-    return carregar_relatorio_sensores()
+def obter_intervalo_analise_sensores() -> tuple[date | None, date | None]:
+    return carregar_intervalo_analise_sensores()
 
 
 @st.cache_data(ttl=60)
-def obter_periodos_analise_sensores() -> pd.DataFrame:
-    return carregar_periodos_analise_sensores()
-
-
-@st.cache_data(ttl=60)
-def obter_contratos_analise_sensores(
-    data_analise: date, hora_analise: int
+def obter_relatorio_sensores_periodo(
+    data_inicio: date,
+    data_fim: date,
+    hora_inicio: int,
+    hora_fim: int,
 ) -> pd.DataFrame:
-    return carregar_contratos_analise_sensores(data_analise, hora_analise)
+    return carregar_relatorio_sensores_periodo(
+        data_inicio,
+        data_fim,
+        hora_inicio,
+        hora_fim,
+    )
 
 
-df, df_carteira, dict_carteiras = obter_dados_painel()
+@st.cache_data(ttl=60)
+def obter_distribuicao_horaria_analise_sensores(
+    data_inicio: date,
+    data_fim: date,
+    hora_inicio: int,
+    hora_fim: int,
+) -> pd.DataFrame:
+    return carregar_distribuicao_horaria_analise_sensores(
+        data_inicio,
+        data_fim,
+        hora_inicio,
+        hora_fim,
+    )
+
+
+df_carteira, dict_carteiras = obter_dados_carteira()
+opcoes_eventos = obter_opcoes_eventos()
 
 st.markdown('<div class="page-kicker">Operações · monitoramento</div>', unsafe_allow_html=True)
 st.title("Gestão de disparos")
 st.caption("Acompanhamento de eventos, metas por filial e recorrência de clientes.")
 
-if df is None or df.empty:
+if not opcoes_eventos["empresas"] or not opcoes_eventos["departamentos"]:
     st.warning("O banco está disponível, mas ainda não há eventos para exibir.")
     if st.button("Atualizar dados"):
         st.cache_data.clear()
@@ -257,7 +435,7 @@ with st.sidebar:
         st.cache_data.clear()
         st.rerun()
 
-    empresas_disponiveis = sorted(df["empresa"].dropna().unique().tolist())
+    empresas_disponiveis = opcoes_eventos["empresas"]
     filiais_carteira = (
         df_carteira.loc[df_carteira["tipo"] == "FILIAL", "filial"].tolist()
         if not df_carteira.empty
@@ -270,9 +448,7 @@ with st.sidebar:
         default=opcoes_filiais,
     )
 
-    departamentos_disponiveis = sorted(
-        df["departamento"].dropna().unique().tolist()
-    )
+    departamentos_disponiveis = opcoes_eventos["departamentos"]
     departamentos_selecionados = st.multiselect(
         "Departamentos",
         options=departamentos_disponiveis,
@@ -301,14 +477,12 @@ with st.sidebar:
             st.success("Carteira atualizada.")
             st.rerun()
 
-df_filtrado = df[
-    df["empresa"].isin(filiais_selecionadas)
-    & df["departamento"].isin(departamentos_selecionados)
-].copy()
-
 historico_label = "Todo o histórico"
-meses_disponiveis = sorted(
-    df_filtrado["ano_mes"].dropna().unique().tolist(), reverse=True
+empresas_filtro = tuple(filiais_selecionadas)
+departamentos_filtro = tuple(departamentos_selecionados)
+meses_disponiveis = obter_meses_eventos(
+    empresas_filtro,
+    departamentos_filtro,
 )
 opcoes_periodo = [historico_label, *meses_disponiveis]
 
@@ -340,27 +514,39 @@ with st.sidebar:
             modo_periodos = "todos"
 
 if periodo == historico_label:
-    df_fechamento = df_filtrado[df_filtrado["data_evento"] <= ontem].copy()
+    data_inicio_eventos = None
+    data_fim_eventos = ontem
+    ano_mes_eventos = None
     modo_historico = True
-    dias_decorridos = max(df_fechamento["data_evento"].nunique(), 1)
-    dias_totais_mes = dias_decorridos
-    descricao_periodo = f"Histórico até {ontem.strftime('%d/%m/%Y')}"
 else:
-    df_mes = df_filtrado[df_filtrado["ano_mes"] == periodo].copy()
     ano_selecionado, mes_selecionado = map(int, periodo.split("-"))
+    data_inicio_eventos = None
+    ano_mes_eventos = periodo
     dias_totais_mes = calendar.monthrange(ano_selecionado, mes_selecionado)[1]
     modo_historico = False
 
     if periodo == mes_atual:
-        df_fechamento = df_mes[df_mes["data_evento"] <= ontem].copy()
+        data_fim_eventos = ontem
         dias_decorridos = max(ontem.day, 1)
         descricao_periodo = (
             f"{periodo} · dados fechados até {ontem.strftime('%d/%m/%Y')}"
         )
     else:
-        df_fechamento = df_mes
+        data_fim_eventos = None
         dias_decorridos = dias_totais_mes
         descricao_periodo = f"{periodo} · mês encerrado"
+
+df_fechamento = obter_eventos(
+    data_inicio_eventos,
+    data_fim_eventos,
+    empresas_filtro,
+    departamentos_filtro,
+    ano_mes_eventos,
+)
+if modo_historico:
+    dias_decorridos = max(df_fechamento["data_evento"].nunique(), 1)
+    dias_totais_mes = dias_decorridos
+    descricao_periodo = f"Histórico até {ontem.strftime('%d/%m/%Y')}"
 
 mascara_smart = df_fechamento["departamento"].str.upper().str.contains(
     "SMART", na=False
@@ -427,7 +613,9 @@ with tab_visao:
         "Comparação entre o volume projetado no período e o teto definido para cada filial."
     )
 
-    metricas_filiais = calcular_metricas_filiais(
+    metricas_filiais = medir_processamento(
+        "metricas_filiais",
+        calcular_metricas_filiais,
         df_smart,
         filiais_selecionadas,
         dict_carteiras,
@@ -565,9 +753,30 @@ with tab_pareto:
         "COD exibe os quatro primeiros caracteres alfanuméricos; CONTRATO exibe o trecho após _."
     )
 
-    clientes_smart = processar_reincidencia_clientes(df_smart)
-    clientes_outros = processar_reincidencia_clientes(df_outros)
-    clientes_todos = processar_reincidencia_clientes(df_fechamento)
+    clientes_smart = obter_reincidencia(
+        data_inicio_eventos,
+        data_fim_eventos,
+        ano_mes_eventos,
+        empresas_filtro,
+        departamentos_filtro,
+        "smart",
+    )
+    clientes_outros = obter_reincidencia(
+        data_inicio_eventos,
+        data_fim_eventos,
+        ano_mes_eventos,
+        empresas_filtro,
+        departamentos_filtro,
+        "outros",
+    )
+    clientes_todos = obter_reincidencia(
+        data_inicio_eventos,
+        data_fim_eventos,
+        ano_mes_eventos,
+        empresas_filtro,
+        departamentos_filtro,
+        "todos",
+    )
 
     def renderizar_clientes(dataframe, nome_arquivo, titulo_aba):
         if dataframe.empty:
@@ -639,20 +848,36 @@ with tab_pareto:
             },
         )
 
-        buffer = io.BytesIO()
-        with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-            dados_exibicao.to_excel(
-                writer,
-                index=False,
-                sheet_name=titulo_aba[:31],
-            )
-        st.download_button(
-            "Baixar relatório Excel",
-            data=buffer.getvalue(),
-            file_name=nome_arquivo,
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            key=f"download_{nome_arquivo}",
+        chave_exportacao = (
+            f"{nome_arquivo}_{hash((periodo, empresas_filtro, departamentos_filtro))}"
         )
+        chave_bytes_exportacao = f"bytes_{chave_exportacao}"
+        if st.button(
+            "Preparar relatório Excel",
+            key=f"preparar_{chave_exportacao}",
+        ):
+            inicio_exportacao = time_module.perf_counter()
+            buffer = io.BytesIO()
+            with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+                dados_exibicao.to_excel(
+                    writer,
+                    index=False,
+                    sheet_name=titulo_aba[:31],
+                )
+            st.session_state[chave_bytes_exportacao] = buffer.getvalue()
+            logger.info(
+                "Desempenho app [exportacao_excel]: processamento=%.1f ms; bytes=%s",
+                (time_module.perf_counter() - inicio_exportacao) * 1000,
+                len(st.session_state[chave_bytes_exportacao]),
+            )
+        if chave_bytes_exportacao in st.session_state:
+            st.download_button(
+                "Baixar relatório Excel",
+                data=st.session_state[chave_bytes_exportacao],
+                file_name=nome_arquivo,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key=f"download_{chave_exportacao}",
+            )
 
     aba_smart, aba_outros, aba_todos = st.tabs(
         [
@@ -719,31 +944,21 @@ with tab_plantao:
         st.subheader("Monitoramento por dia e horário")
 
         st.caption("Atualização automática a cada 5 minutos.")
-        dados_monitoramento, _, _ = obter_dados_painel()
-        df_monitoramento = dados_monitoramento[
-            dados_monitoramento["empresa"].isin(filiais_selecionadas)
-            & dados_monitoramento["departamento"].isin(departamentos_selecionados)
-        ].copy()
-        datas_normalizadas = pd.to_datetime(
-            df_monitoramento["data_evento"], errors="coerce"
-        ).dt.date
-        df_monitoramento = df_monitoramento.loc[datas_normalizadas <= hoje].copy()
-        datas_eventos = sorted(
-            pd.to_datetime(df_monitoramento["data_evento"], errors="coerce")
-            .dropna()
-            .dt.date.unique()
+        data_minima_disponivel, _ = obter_intervalo_eventos(
+            empresas_filtro,
+            departamentos_filtro,
+            hoje,
         )
 
-        if not datas_eventos:
+        if data_minima_disponivel is None:
             st.info("Não há datas de eventos disponíveis para os filtros selecionados.")
         else:
-            data_padrao = hoje
             coluna_data, coluna_inicio, coluna_fim = st.columns(3)
             with coluna_data:
                 data_selecionada = st.date_input(
                     "Dia dos eventos",
-                    value=data_padrao,
-                    min_value=datas_eventos[0],
+                    value=hoje,
+                    min_value=data_minima_disponivel,
                     max_value=hoje,
                     format="DD/MM/YYYY",
                     key="monitoramento_data",
@@ -766,18 +981,13 @@ with tab_plantao:
             else:
                 minutos_inicio = horario_inicio.hour * 60 + horario_inicio.minute
                 minutos_fim = horario_fim.hour * 60 + horario_fim.minute
-                datas_normalizadas = pd.to_datetime(
-                    df_monitoramento["data_evento"], errors="coerce"
-                ).dt.date
-                minutos_do_dia = pd.to_numeric(
-                    df_monitoramento["minuto_do_dia"], errors="coerce"
+                df_faixa = obter_eventos_monitoramento(
+                    data_selecionada,
+                    minutos_inicio,
+                    minutos_fim,
+                    empresas_filtro,
+                    departamentos_filtro,
                 )
-                df_faixa = df_monitoramento[
-                    (datas_normalizadas == data_selecionada)
-                    & minutos_do_dia.between(
-                        minutos_inicio, minutos_fim, inclusive="both"
-                    )
-                ].copy()
                 df_faixa = filtrar_por_periodos_horarios(
                     df_faixa,
                     periodos_selecionados=periodos_selecionados,
@@ -1018,7 +1228,7 @@ with tab_plantao:
             value=False,
             key="calcular_possivel_mau_uso",
         ):
-            alertas_mau_uso = detectar_possivel_mau_uso(df)
+            alertas_mau_uso = obter_alertas_mau_uso()
             if alertas_mau_uso.empty:
                 st.info("Nenhum contrato atende à regra de possível mau uso.")
             else:
@@ -1044,7 +1254,7 @@ with tab_plantao:
             value=False,
             key="calcular_limitador",
         ):
-            limitadores = detectar_limitador(df)
+            limitadores = obter_limitadores()
             if limitadores.empty:
                 st.info("Nenhum agrupamento atende ao limite de cinco disparos.")
             else:
@@ -1071,7 +1281,10 @@ with tab_plantao:
             value=False,
             key="comparacao_mensal",
         ):
-            comparacao_mensal = comparar_disparos_mensais(df_filtrado)
+            comparacao_mensal = obter_comparacao_disparos_mensais(
+                empresas_filtro,
+                departamentos_filtro,
+            )
             if comparacao_mensal.empty:
                 st.info("Não há eventos com mês válido para comparar.")
             else:
@@ -1099,10 +1312,16 @@ with tab_previsao:
         value=False,
         key="calcular_previsoes_mensais",
     ):
-        previsoes = calcular_previsoes(
-            df_filtrado,
+        data_inicio_previsao = (
+            pd.Period(date(hoje.year, hoje.month, 1), freq="M") - 3
+        ).start_time.date()
+        previsoes = obter_previsoes(
+            data_inicio_previsao,
+            ontem,
             hoje,
-            periodos_selecionados=periodos_selecionados,
+            empresas_filtro,
+            departamentos_filtro,
+            periodos_selecionados=tuple(periodos_selecionados),
             modo_periodos=modo_periodos,
         )
         if previsoes.empty:
@@ -1145,17 +1364,16 @@ with tab_acompanhamento:
         "incluídos nos filtros globais."
     )
 
-    datas_acompanhamento = (
-        pd.to_datetime(df["data_evento"], errors="coerce")
-        .dropna()
-        .dt.date
+    data_minima_disponivel, data_maxima_disponivel = obter_intervalo_eventos(
+        empresas_filtro,
+        departamentos_filtro,
     )
-    if datas_acompanhamento.empty:
+    if data_minima_disponivel is None or data_maxima_disponivel is None:
         st.info("Não há datas de eventos disponíveis para os filtros selecionados.")
     else:
         if periodo == historico_label:
-            data_minima = datas_acompanhamento.min()
-            data_maxima = datas_acompanhamento.max()
+            data_minima = data_minima_disponivel
+            data_maxima = data_maxima_disponivel
         else:
             ano_periodo, mes_periodo = map(int, periodo.split("-"))
             data_minima = date(ano_periodo, mes_periodo, 1)
@@ -1364,149 +1582,141 @@ with tab_acompanhamento:
 
 with tab_sensores:
     st.subheader("Relatório de sensores")
-    dados_sensores = obter_relatorio_sensores()
-    if dados_sensores.empty or dados_sensores["snapshot_id"].isna().all():
-        st.info("O coletor ainda não salvou um relatório de sensores.")
+    data_minima_disponivel, data_maxima_disponivel = (
+        obter_intervalo_analise_sensores()
+    )
+    if data_minima_disponivel is None or data_maxima_disponivel is None:
+        dados_sensores = pd.DataFrame()
+        st.info("Não há datas de análise relacionadas a sensores.")
     else:
-        snapshots = dados_sensores.drop_duplicates("snapshot_id")
-        dados_sensores = dados_sensores.loc[dados_sensores["id"].notna()].copy()
-        inicio_relatorio = pd.to_datetime(snapshots["period_start"]).min().strftime(
-            "%d/%m/%Y"
+        data_inicio_padrao = max(
+            data_minima_disponivel,
+            data_maxima_disponivel - timedelta(days=6),
         )
-        fim_relatorio = pd.to_datetime(snapshots["period_end"]).max().strftime(
-            "%d/%m/%Y"
+        periodo_analise = st.date_input(
+            "Período das análises",
+            value=(data_inicio_padrao, data_maxima_disponivel),
+            min_value=data_minima_disponivel,
+            max_value=data_maxima_disponivel,
+            format="DD/MM/YYYY",
+            key="sensores_periodo_analise",
         )
-        ultima_carga = pd.to_datetime(snapshots["collected_at"]).max().strftime(
-            "%d/%m/%Y às %H:%M"
-        )
-        st.caption(
-            f"Período coberto: {inicio_relatorio} a {fim_relatorio} · "
-            f"{len(snapshots)} snapshots · última carga: {ultima_carga}"
-        )
-        st.info(
-            "O filtro de hora usa os registros de analise.hora_cheia. Como os dados "
-            "de sensor são agregados por dia e não trazem o horário individual, "
-            "os sensores exibidos são uma associação aproximada aos contratos com "
-            "análise naquela hora."
-        )
-
-        periodos_analise_sensores = obter_periodos_analise_sensores()
-        if periodos_analise_sensores.empty:
-            dados_sensores = dados_sensores.iloc[0:0].copy()
-            st.info("Não há datas e horários de análise relacionados a sensores.")
+        if (
+            not isinstance(periodo_analise, tuple)
+            or len(periodo_analise) != 2
+            or not all(isinstance(data, date) for data in periodo_analise)
+        ):
+            dados_sensores = pd.DataFrame()
+            st.info("Selecione as datas inicial e final do período.")
         else:
-            periodos_analise_sensores["dia"] = pd.to_datetime(
-                periodos_analise_sensores["dia"]
-            ).dt.date
-            datas_analise_disponiveis = sorted(
-                periodos_analise_sensores["dia"].unique()
+            data_inicio_analise, data_fim_analise = periodo_analise
+            hora_inicio_analise, hora_fim_analise = st.slider(
+                "Faixa horária das análises",
+                min_value=0,
+                max_value=23,
+                value=(0, 23),
+                step=1,
+                format="%02d:00",
+                key="sensores_faixa_horaria",
+                help="A faixa é inclusiva. Por exemplo, 02:00–16:00 inclui as horas 02 até 16.",
             )
-            col_data_analise, col_hora_analise = st.columns(2)
-            with col_data_analise:
-                data_analise_selecionada = st.date_input(
-                    "Data da análise",
-                    value=datas_analise_disponiveis[-1],
-                    min_value=datas_analise_disponiveis[0],
-                    max_value=datas_analise_disponiveis[-1],
-                    key="sensores_data_analise",
+            st.caption(
+                f"Recorte: {data_inicio_analise:%d/%m/%Y}–"
+                f"{data_fim_analise:%d/%m/%Y} · "
+                f"{hora_inicio_analise:02d}:00–{hora_fim_analise:02d}:00"
+            )
+            st.info(
+                "Os sensores são agregados por dia e não informam a hora real de "
+                "cada disparo. A faixa horária seleciona análises associadas; "
+                "essa associação é aproximada."
+            )
+            dados_sensores = obter_relatorio_sensores_periodo(
+                data_inicio_analise,
+                data_fim_analise,
+                hora_inicio_analise,
+                hora_fim_analise,
+            )
+            if not dados_sensores.empty:
+                dados_sensores["hora_analise"] = (
+                    f"{hora_inicio_analise:02d}:00–{hora_fim_analise:02d}:00"
                 )
-            horas_analise_disponiveis = sorted(
-                periodos_analise_sensores.loc[
-                    periodos_analise_sensores["dia"]
-                    == data_analise_selecionada,
-                    "hora_cheia",
-                ]
-                .dropna()
-                .astype(int)
-                .unique()
+            distribuicao_horaria_sensores = (
+                obter_distribuicao_horaria_analise_sensores(
+                    data_inicio_analise,
+                    data_fim_analise,
+                    hora_inicio_analise,
+                    hora_fim_analise,
+                )
             )
-            if not horas_analise_disponiveis:
-                dados_sensores = dados_sensores.iloc[0:0].copy()
-                st.info("Não há análise relacionada a sensores nesta data.")
-            else:
-                with col_hora_analise:
-                    hora_analise_selecionada = st.selectbox(
-                        "Hora da análise",
-                        options=horas_analise_disponiveis,
-                        format_func=lambda hora: f"{hora:02d}:00–{hora + 1:02d}:00",
-                        key="sensores_hora_analise",
-                    )
+            if not distribuicao_horaria_sensores.empty:
+                horas_selecionadas = pd.Index(
+                    range(hora_inicio_analise, hora_fim_analise + 1),
+                    name="hora",
+                )
+                distribuicao_horaria_sensores = (
+                    distribuicao_horaria_sensores.set_index("hora")
+                    .reindex(horas_selecionadas, fill_value=0)
+                    .rename_axis("hora")
+                    .reset_index()
+                )
+            grafico_horas_analise = px.bar(
+                distribuicao_horaria_sensores,
+                x="hora",
+                y="analises",
+                labels={
+                    "hora": "Hora da análise",
+                    "analises": "Análises associadas",
+                },
+                color_discrete_sequence=["#83aaff"],
+            )
+            grafico_horas_analise.update_layout(
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+                font={"family": "system-ui, sans-serif", "color": "#f1f3f5"},
+                margin={"l": 8, "r": 16, "t": 12, "b": 8},
+                xaxis={
+                    "tickmode": "linear",
+                    "tick0": hora_inicio_analise,
+                    "dtick": 1,
+                    "showgrid": False,
+                },
+                yaxis={
+                    "showgrid": True,
+                    "gridcolor": "#30353d",
+                    "title": "Análises associadas",
+                },
+            )
+            st.subheader("Análises associadas por hora")
+            st.caption(
+                "Este gráfico mostra o horário registrado na análise, não o "
+                "horário individual do disparo do sensor."
+            )
+            st.plotly_chart(grafico_horas_analise, width="stretch")
 
-                contratos_na_hora = obter_contratos_analise_sensores(
-                    data_analise_selecionada,
-                    int(hora_analise_selecionada),
+            if not dados_sensores.empty:
+                snapshots = dados_sensores.drop_duplicates("snapshot_id")
+                inicio_relatorio = pd.to_datetime(
+                    snapshots["period_start"]
+                ).min().strftime("%d/%m/%Y")
+                fim_relatorio = pd.to_datetime(
+                    snapshots["period_end"]
+                ).max().strftime("%d/%m/%Y")
+                ultima_carga = pd.to_datetime(
+                    snapshots["collected_at"]
+                ).max().strftime("%d/%m/%Y às %H:%M")
+                st.caption(
+                    f"Snapshots relacionados: {len(snapshots)} · "
+                    f"janela coletada: {inicio_relatorio}–{fim_relatorio} · "
+                    f"última carga: {ultima_carga}"
                 )
-                intervalo_hora_analise = (
-                    f"{hora_analise_selecionada:02d}:00–"
-                    f"{(hora_analise_selecionada + 1) % 24:02d}:00"
-                )
-                if contratos_na_hora.empty:
-                    dados_sensores = dados_sensores.iloc[0:0].copy()
-                else:
-                    dados_sensores["_data_analise"] = pd.to_datetime(
-                        dados_sensores["data"], errors="coerce"
-                    ).dt.date
-                    dados_sensores["_numero_analise"] = pd.to_numeric(
-                        dados_sensores["num_contrato"], errors="coerce"
-                    ).astype("Int64")
-                    dados_sensores["_departamento_analise"] = (
-                        dados_sensores["departamento"]
-                        .fillna("")
-                        .astype(str)
-                        .str.strip()
-                        .str.upper()
-                    )
-                    dados_sensores["_estado_analise"] = (
-                        dados_sensores["estado"]
-                        .fillna("")
-                        .astype(str)
-                        .str.strip()
-                        .str.upper()
-                    )
-                    contratos_na_hora["_numero_analise"] = pd.to_numeric(
-                        contratos_na_hora["num_contrato"], errors="coerce"
-                    ).astype("Int64")
-                    chaves_contratos = set(
-                        contratos_na_hora[
-                            [
-                                "_numero_analise",
-                                "departamento",
-                                "estado",
-                            ]
-                        ]
-                        .itertuples(index=False, name=None)
-                    )
-                    chaves_sensores = pd.Series(
-                        list(
-                            zip(
-                                dados_sensores["_numero_analise"],
-                                dados_sensores["_departamento_analise"],
-                                dados_sensores["_estado_analise"],
-                            )
-                        ),
-                        index=dados_sensores.index,
-                    )
-                    selecionados_na_hora = chaves_sensores.isin(chaves_contratos)
-                    dados_sensores = dados_sensores.loc[
-                        (dados_sensores["_data_analise"] == data_analise_selecionada)
-                        & selecionados_na_hora
-                    ].drop(
-                        columns=[
-                            "_data_analise",
-                            "_numero_analise",
-                            "_departamento_analise",
-                            "_estado_analise",
-                        ]
-                    )
-                    st.caption(
-                        f"Análise: {data_analise_selecionada:%d/%m/%Y} · "
-                        f"{intervalo_hora_analise}"
-                    )
-                    dados_sensores["hora_analise"] = intervalo_hora_analise
 
         if dados_sensores.empty:
-            st.info("Não há contratos de sensores para a data e hora selecionadas.")
-        else:
+            st.info(
+                "Não há contratos de sensores associados às análises no período "
+                "e na faixa horária selecionados."
+            )
+
+    if not dados_sensores.empty:
             col_filtro_filial, col_filtro_depto, col_filtro_modelo = st.columns(3)
             filiais_sensores = sorted(
                 dados_sensores["empresa"].dropna().unique().tolist()
@@ -1594,6 +1804,14 @@ with tab_sensores:
                     .rename(columns={"size": "REGISTROS"})
                     .sort_values("REGISTROS", ascending=False)
                 )
+                registros_por_dia_modelo = (
+                    sensores_filtrados.groupby(
+                        ["data", "modelo_sensor"],
+                        as_index=False,
+                    )
+                    .size()
+                    .rename(columns={"size": "REGISTROS"})
+                )
                 zonas_principais = (
                     sensores_filtrados.dropna(subset=["zona_disparos"])
                     .groupby("zona_disparos", as_index=False)
@@ -1605,6 +1823,22 @@ with tab_sensores:
                     .head(10)
                 )
                 grafico_modelos, grafico_zonas = st.columns(2)
+                st.subheader("Registros de sensores por dia")
+                st.plotly_chart(
+                    px.bar(
+                        registros_por_dia_modelo,
+                        x="data",
+                        y="REGISTROS",
+                        color="modelo_sensor",
+                        barmode="stack",
+                        labels={
+                            "data": "Dia do snapshot",
+                            "REGISTROS": "Registros",
+                            "modelo_sensor": "Modelo",
+                        },
+                    ),
+                    width="stretch",
+                )
                 with grafico_modelos:
                     st.subheader("Registros por modelo")
                     st.plotly_chart(
@@ -1655,12 +1889,12 @@ with tab_sensores:
                         "cod_contrato": "CÓDIGO",
                         "num_contrato": "CONTRATO",
                         "data": "DATA",
-                        "hora_analise": "HORA DA ANÁLISE",
                         "empresa": "FILIAL",
                         "departamento": "DEPARTAMENTO",
                         "disparos": "CONTAGEM REPORTADA",
                         "message_count": "MENSAGENS API",
                         "zona_disparos": "ZONA PRINCIPAL",
+                        "hora_analise": "FAIXA DA ANÁLISE",
                         "modelo_sensor": "MODELO",
                         "estado": "UF",
                         "department_mapping_confidence": "CONFIANÇA DEPARTAMENTO",
@@ -1671,11 +1905,11 @@ with tab_sensores:
                     "CÓDIGO",
                     "CONTRATO",
                     "DATA",
-                    "HORA DA ANÁLISE",
                     "FILIAL",
                     "DEPARTAMENTO",
                     "MODELO",
                     "ZONA PRINCIPAL",
+                    "FAIXA DA ANÁLISE",
                     "CONTAGEM REPORTADA",
                     "MENSAGENS API",
                     "UF",
@@ -1698,14 +1932,14 @@ with tab_sensores:
                         "DATA": st.column_config.DateColumn(
                             "DATA", format="DD/MM/YYYY"
                         ),
-                        "HORA DA ANÁLISE": st.column_config.TextColumn(
-                            "HORA DA ANÁLISE", width="small"
-                        ),
                         "FILIAL": st.column_config.TextColumn("FILIAL"),
                         "DEPARTAMENTO": st.column_config.TextColumn("DEPARTAMENTO"),
                         "MODELO": st.column_config.TextColumn("MODELO"),
                         "ZONA PRINCIPAL": st.column_config.TextColumn(
                             "ZONA PRINCIPAL", width="large"
+                        ),
+                        "FAIXA DA ANÁLISE": st.column_config.TextColumn(
+                            "FAIXA DA ANÁLISE", width="small"
                         ),
                         "CONTAGEM REPORTADA": st.column_config.NumberColumn(
                             "CONTAGEM REPORTADA", format="%d"
@@ -1728,3 +1962,8 @@ with tab_sensores:
                     mime="text/csv",
                     key="download_relatorio_sensores",
                 )
+
+logger.info(
+    "Desempenho app [render_servidor]: total=%.1f ms",
+    (time_module.perf_counter() - _render_inicio) * 1000,
+)

@@ -1,16 +1,48 @@
 import hashlib
 import logging
+import time
 from datetime import date
 from pathlib import Path
 from typing import Dict, List, Optional
 import pandas as pd
-from sqlalchemy import bindparam, create_engine, text
+from sqlalchemy import bindparam, create_engine, event, text
 from src.config import CARTEIRA_INICIAL_ESTRUTURADA, DB_URL, PASTA_DADOS
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 engine = create_engine(DB_URL, pool_pre_ping=True)
+
+
+@event.listens_for(engine, "before_cursor_execute")
+def _iniciar_medicao_consulta(conn, cursor, statement, parameters, context, executemany):
+    conn.info.setdefault("_perf_query_started", []).append(time.perf_counter())
+
+
+@event.listens_for(engine, "after_cursor_execute")
+def _finalizar_medicao_consulta(conn, cursor, statement, parameters, context, executemany):
+    inicio = conn.info["_perf_query_started"].pop()
+    conn.info["_perf_query_seconds"] = (
+        conn.info.get("_perf_query_seconds", 0.0) + time.perf_counter() - inicio
+    )
+
+
+COLUNAS_EVENTOS = [
+    "id",
+    "contrato",
+    "numero_contrato",
+    "chave_cliente",
+    "empresa",
+    "razao_social",
+    "departamento",
+    "hora_evento",
+    "dt_hora",
+    "data_evento",
+    "ano_mes",
+    "hora_int",
+    "minuto_do_dia",
+    "final_de_semana",
+]
 
 COLUNAS_OBRIGATORIAS_EXCEL = ["Id", "Contrato", "Numero Contrato", "Hora evento"]
 COLUNAS_ACOMPANHAMENTO_DIARIO = [
@@ -20,6 +52,41 @@ COLUNAS_ACOMPANHAMENTO_DIARIO = [
     "razao_social",
     "disparos",
 ]
+
+
+def _read_sql(
+    consulta,
+    conexao,
+    *,
+    nome: str,
+    params: Optional[dict] = None,
+) -> pd.DataFrame:
+    inicio = time.perf_counter()
+    info_conexao = getattr(conexao, "info", {})
+    exec_antes = info_conexao.get("_perf_query_seconds", 0.0)
+    if params is None:
+        dataframe = pd.read_sql(consulta, conexao)
+    else:
+        dataframe = pd.read_sql(consulta, conexao, params=params)
+    total_ms = (time.perf_counter() - inicio) * 1000
+    exec_ms = max(
+        0.0,
+        (info_conexao.get("_perf_query_seconds", exec_antes) - exec_antes) * 1000,
+    )
+    transferencia_ms = max(0.0, total_ms - exec_ms)
+    tamanho_bytes = int(dataframe.memory_usage(index=True, deep=True).sum())
+    logger.info(
+        "Desempenho DB [%s]: execucao=%.1f ms; fetch+DataFrame=%.1f ms; "
+        "total=%.1f ms; linhas=%s; dataframe=%s bytes",
+        nome,
+        exec_ms,
+        transferencia_ms,
+        total_ms,
+        len(dataframe),
+        tamanho_bytes,
+    )
+    return dataframe
+
 
 def normalizar_nome_filial(empresa: str, logradouro: str = "") -> str:
     """
@@ -253,6 +320,13 @@ def verificar_integridade_banco() -> None:
         WHERE table_schema = current_schema()
           AND table_name IN :table_names
     """).bindparams(bindparam("table_names", expanding=True))
+    indices_esperados = {"idx_analise_dia_hora"}
+    consulta_indices = text("""
+        SELECT indexname
+        FROM pg_indexes
+        WHERE schemaname = current_schema()
+          AND indexname IN :index_names
+    """).bindparams(bindparam("index_names", expanding=True))
 
     with engine.begin() as conn:
         existentes = conn.execute(
@@ -275,6 +349,20 @@ def verificar_integridade_banco() -> None:
             )
             raise RuntimeError(
                 f"Schema PostgreSQL externo ausente ou incompleto ({detalhes})."
+            )
+
+        indices_existentes = {
+            nome_indice
+            for (nome_indice,) in conn.execute(
+                consulta_indices,
+                {"index_names": sorted(indices_esperados)},
+            ).all()
+        }
+        indices_faltantes = indices_esperados - indices_existentes
+        if indices_faltantes:
+            raise RuntimeError(
+                "Índices PostgreSQL ausentes ou incompletos "
+                f"({', '.join(sorted(indices_faltantes))})."
             )
 
         total_carteira = conn.execute(text("SELECT COUNT(*) FROM carteira_filiais")).scalar()
@@ -691,19 +779,39 @@ def carregar_relatorio_sensores() -> pd.DataFrame:
         ORDER BY d.data, d.razao_social NULLS LAST, d.num_contrato
     """)
     with engine.connect() as conn:
-        return pd.read_sql(consulta, conn)
+        return _read_sql(consulta, conn, nome="relatorio_sensores")
 
 
 def carregar_periodos_analise_sensores() -> pd.DataFrame:
     consulta = text("""
-        SELECT DISTINCT dia, hora_cheia
-        FROM vw_analise_disp_sensor
-        WHERE sensores_no_dia <> 'SEM SENSOR NO DIA'
-          AND hora_cheia BETWEEN 0 AND 23
-        ORDER BY dia, hora_cheia
+        WITH snapshots_recentes AS (
+            SELECT DISTINCT ON (period_start, period_end) id
+            FROM alarm_report_snapshots
+            ORDER BY period_start, period_end, collected_at DESC, id DESC
+        )
+        SELECT DISTINCT a.dia, a.hora_cheia
+        FROM analise a
+        WHERE a.hora_cheia BETWEEN 0 AND 23
+          AND EXISTS (
+              SELECT 1
+              FROM snapshots_recentes sr
+              JOIN disparos_sensor ds ON ds.snapshot_id = sr.id
+              WHERE ds.data = a.dia
+                AND ds.num_contrato = CASE
+                    WHEN TRIM(COALESCE(a.numero_contrato, '')) ~ '^[0-9]+$'
+                    THEN TRIM(a.numero_contrato)::BIGINT
+                END
+                AND TRIM(ds.cod_contrato) = TRIM(COALESCE(a.contrato, ''))
+                AND UPPER(TRIM(COALESCE(ds.departamento, ''))) =
+                    UPPER(TRIM(COALESCE(a.departamento, '')))
+                AND UPPER(TRIM(COALESCE(ds.estado, ''))) =
+                    UPPER(TRIM(COALESCE(a.estado, '')))
+                AND ds.modelo_sensor NOT IN ('VAZIO', 'SEM ZONA')
+          )
+        ORDER BY a.dia, a.hora_cheia
     """)
     with engine.connect() as conn:
-        return pd.read_sql(consulta, conn)
+        return _read_sql(consulta, conn, nome="periodos_analise_sensores")
 
 
 def carregar_contratos_analise_sensores(data_analise: date, hora_analise: int) -> pd.DataFrame:
@@ -725,32 +833,437 @@ def carregar_contratos_analise_sensores(data_analise: date, hora_analise: int) -
           AND TRIM(COALESCE(numero_contrato, '')) ~ '^[0-9]+$'
     """)
     with engine.connect() as conn:
-        return pd.read_sql(
+        return _read_sql(
             consulta,
             conn,
+            nome="contratos_analise_sensores",
             params={"data_analise": data_analise, "hora_analise": hora_analise},
         )
 
 
-def carregar_eventos(data_inicio: Optional[date] = None, data_fim: Optional[date] = None) -> pd.DataFrame:
-    query = "SELECT * FROM disparos_eventos"
-    params = {}
+def carregar_intervalo_analise_sensores() -> tuple[Optional[date], Optional[date]]:
+    consulta = text("""
+        SELECT MIN(dia) AS data_minima, MAX(dia) AS data_maxima
+        FROM vw_analise_disp_sensor
+        WHERE sensores_no_dia <> 'SEM SENSOR NO DIA'
+          AND hora_cheia BETWEEN 0 AND 23
+    """)
+    with engine.connect() as conn:
+        intervalo = _read_sql(
+            consulta,
+            conn,
+            nome="intervalo_analise_sensores",
+        )
+    if intervalo.empty or pd.isna(intervalo.loc[0, "data_minima"]):
+        return None, None
+    return (
+        pd.Timestamp(intervalo.loc[0, "data_minima"]).date(),
+        pd.Timestamp(intervalo.loc[0, "data_maxima"]).date(),
+    )
 
-    if data_inicio and data_fim:
-        query += " WHERE data_evento BETWEEN :inicio AND :fim"
-        params = {"inicio": data_inicio, "fim": data_fim}
-    elif data_inicio:
-        query += " WHERE data_evento >= :inicio"
-        params = {"inicio": data_inicio}
+
+def _validar_intervalo_sensores(
+    data_inicio: date,
+    data_fim: date,
+    hora_inicio: int,
+    hora_fim: int,
+) -> None:
+    if data_inicio > data_fim:
+        raise ValueError("data_inicio deve ser anterior ou igual a data_fim.")
+    if not 0 <= hora_inicio <= hora_fim <= 23:
+        raise ValueError("A faixa horária deve estar entre 0 e 23, em ordem crescente.")
+
+
+def carregar_relatorio_sensores_periodo(
+    data_inicio: date,
+    data_fim: date,
+    hora_inicio: int,
+    hora_fim: int,
+) -> pd.DataFrame:
+    _validar_intervalo_sensores(data_inicio, data_fim, hora_inicio, hora_fim)
+    consulta = text("""
+        WITH snapshots_recentes AS (
+            SELECT DISTINCT ON (period_start, period_end)
+                id,
+                period_start,
+                period_end,
+                collected_at,
+                page_size,
+                page_count,
+                total_item_count
+            FROM alarm_report_snapshots
+            WHERE period_end BETWEEN :data_inicio AND :data_fim
+            ORDER BY period_start, period_end, collected_at DESC, id DESC
+        )
+        SELECT
+            s.id AS snapshot_id,
+            s.period_start,
+            s.period_end,
+            s.collected_at,
+            s.page_size,
+            s.page_count,
+            s.total_item_count,
+            d.id,
+            d.cod_contrato,
+            d.empresa,
+            d.razao_social,
+            d.num_contrato,
+            d.departamento,
+            d.department_id,
+            d.department_mapping_confidence,
+            d.disparos,
+            d.message_count,
+            d.zona_disparos,
+            d.data,
+            d.mes,
+            d.estado,
+            d.modelo_sensor
+        FROM snapshots_recentes s
+        JOIN disparos_sensor d ON d.snapshot_id = s.id
+        WHERE d.data BETWEEN :data_inicio AND :data_fim
+          AND EXISTS (
+              SELECT 1
+              FROM vw_analise_disp_sensor a
+              WHERE a.dia BETWEEN :data_inicio AND :data_fim
+                AND a.dia = d.data
+                AND a.hora_cheia BETWEEN :hora_inicio AND :hora_fim
+                AND a.sensores_no_dia <> 'SEM SENSOR NO DIA'
+                AND CASE
+                    WHEN TRIM(COALESCE(a.numero_contrato, '')) ~ '^[0-9]+$'
+                    THEN TRIM(a.numero_contrato)::BIGINT
+                END = d.num_contrato
+                AND UPPER(TRIM(COALESCE(a.departamento, ''))) =
+                    UPPER(TRIM(COALESCE(d.departamento, '')))
+                AND UPPER(TRIM(COALESCE(a.estado, ''))) =
+                    UPPER(TRIM(COALESCE(d.estado, '')))
+          )
+        ORDER BY d.data, d.razao_social NULLS LAST, d.num_contrato
+    """)
+    with engine.connect() as conn:
+        return _read_sql(
+            consulta,
+            conn,
+            nome="relatorio_sensores_periodo",
+            params={
+                "data_inicio": data_inicio,
+                "data_fim": data_fim,
+                "hora_inicio": hora_inicio,
+                "hora_fim": hora_fim,
+            },
+        )
+
+
+def carregar_distribuicao_horaria_analise_sensores(
+    data_inicio: date,
+    data_fim: date,
+    hora_inicio: int,
+    hora_fim: int,
+) -> pd.DataFrame:
+    _validar_intervalo_sensores(data_inicio, data_fim, hora_inicio, hora_fim)
+    consulta = text("""
+        SELECT
+            hora_cheia AS hora,
+            COUNT(DISTINCT id) AS analises
+        FROM vw_analise_disp_sensor
+        WHERE dia BETWEEN :data_inicio AND :data_fim
+          AND hora_cheia BETWEEN :hora_inicio AND :hora_fim
+          AND sensores_no_dia <> 'SEM SENSOR NO DIA'
+        GROUP BY hora_cheia
+        ORDER BY hora_cheia
+    """)
+    with engine.connect() as conn:
+        return _read_sql(
+            consulta,
+            conn,
+            nome="distribuicao_horaria_analise_sensores",
+            params={
+                "data_inicio": data_inicio,
+                "data_fim": data_fim,
+                "hora_inicio": hora_inicio,
+                "hora_fim": hora_fim,
+            },
+        )
+
+
+def carregar_opcoes_eventos() -> dict[str, list[str]]:
+    with engine.connect() as conn:
+        empresas = _read_sql(
+            text("""
+                SELECT DISTINCT empresa
+                FROM disparos_eventos
+                WHERE empresa IS NOT NULL
+                ORDER BY empresa
+            """),
+            conn,
+            nome="opcoes_empresas",
+        )
+        departamentos = _read_sql(
+            text("""
+                SELECT DISTINCT departamento
+                FROM disparos_eventos
+                WHERE departamento IS NOT NULL
+                ORDER BY departamento
+            """),
+            conn,
+            nome="opcoes_departamentos",
+        )
+    return {
+        "empresas": empresas["empresa"].astype(str).tolist(),
+        "departamentos": departamentos["departamento"].astype(str).tolist(),
+    }
+
+
+def _filtros_eventos(
+    empresas: List[str],
+    departamentos: List[str],
+) -> tuple[str, dict]:
+    if not empresas or not departamentos:
+        return "", {}
+    return (
+        " AND empresa IN :empresas AND departamento IN :departamentos",
+        {"empresas": empresas, "departamentos": departamentos},
+    )
+
+
+def carregar_meses_eventos(
+    empresas: List[str],
+    departamentos: List[str],
+) -> list[str]:
+    filtro_sql, params = _filtros_eventos(empresas, departamentos)
+    if not filtro_sql:
+        return []
+    consulta = text(f"""
+        SELECT DISTINCT ano_mes
+        FROM disparos_eventos
+        WHERE ano_mes IS NOT NULL{filtro_sql}
+        ORDER BY ano_mes DESC
+    """).bindparams(
+        bindparam("empresas", expanding=True),
+        bindparam("departamentos", expanding=True),
+    )
+    with engine.connect() as conn:
+        meses = _read_sql(
+            consulta,
+            conn,
+            nome="meses_eventos",
+            params=params,
+        )
+    return meses["ano_mes"].astype(str).tolist()
+
+
+def carregar_intervalo_eventos(
+    empresas: List[str],
+    departamentos: List[str],
+    data_limite: Optional[date] = None,
+) -> tuple[Optional[date], Optional[date]]:
+    filtro_sql, params = _filtros_eventos(empresas, departamentos)
+    if not filtro_sql:
+        return None, None
+    limite_sql = " AND data_evento <= :data_limite" if data_limite else ""
+    if data_limite:
+        params["data_limite"] = data_limite
+    consulta = text(f"""
+        SELECT MIN(data_evento) AS data_minima, MAX(data_evento) AS data_maxima
+        FROM disparos_eventos
+        WHERE data_evento IS NOT NULL{filtro_sql}{limite_sql}
+    """).bindparams(
+        bindparam("empresas", expanding=True),
+        bindparam("departamentos", expanding=True),
+    )
+    with engine.connect() as conn:
+        intervalo = _read_sql(
+            consulta,
+            conn,
+            nome="intervalo_eventos",
+            params=params,
+        )
+    if intervalo.empty or pd.isna(intervalo.loc[0, "data_minima"]):
+        return None, None
+    return (
+        pd.Timestamp(intervalo.loc[0, "data_minima"]).date(),
+        pd.Timestamp(intervalo.loc[0, "data_maxima"]).date(),
+    )
+
+
+def carregar_eventos(
+    data_inicio: Optional[date] = None,
+    data_fim: Optional[date] = None,
+    empresas: Optional[List[str]] = None,
+    departamentos: Optional[List[str]] = None,
+    *,
+    ano_mes: Optional[str] = None,
+    minuto_inicio: Optional[int] = None,
+    minuto_fim: Optional[int] = None,
+) -> pd.DataFrame:
+    if data_inicio and data_fim and data_inicio > data_fim:
+        return pd.DataFrame(columns=COLUNAS_EVENTOS)
+    if not empresas or not departamentos:
+        return pd.DataFrame(columns=COLUNAS_EVENTOS)
+    if (minuto_inicio is None) != (minuto_fim is None):
+        raise ValueError("minuto_inicio e minuto_fim devem ser informados juntos.")
+    if minuto_inicio is not None and (
+        not 0 <= minuto_inicio <= 1439 or not 0 <= minuto_fim <= 1439
+    ):
+        raise ValueError("Os minutos devem estar entre 0 e 1439.")
+
+    filtros = []
+    params = {
+        "empresas": empresas,
+        "departamentos": departamentos,
+    }
+    if data_inicio is not None:
+        filtros.append("data_evento >= :inicio")
+        params["inicio"] = data_inicio
+    if data_fim is not None:
+        filtros.append("data_evento <= :fim")
+        params["fim"] = data_fim
+    if ano_mes is not None:
+        filtros.append("ano_mes = :ano_mes")
+        params["ano_mes"] = ano_mes
+    if minuto_inicio is not None:
+        filtros.append("minuto_do_dia BETWEEN :minuto_inicio AND :minuto_fim")
+        params["minuto_inicio"] = minuto_inicio
+        params["minuto_fim"] = minuto_fim
+    filtros.extend(
+        [
+            "empresa IN :empresas",
+            "departamento IN :departamentos",
+        ]
+    )
+    consulta = text(f"""
+        SELECT {", ".join(COLUNAS_EVENTOS)}
+        FROM disparos_eventos
+        WHERE {" AND ".join(filtros)}
+    """).bindparams(
+        bindparam("empresas", expanding=True),
+        bindparam("departamentos", expanding=True),
+    )
 
     with engine.connect() as conn:
-        df = pd.read_sql(text(query), conn, params=params)
+        df = _read_sql(
+            consulta,
+            conn,
+            nome="eventos_monitoramento" if minuto_inicio is not None else "eventos",
+            params=params,
+        )
 
     if not df.empty:
         df["dt_hora"] = pd.to_datetime(df["dt_hora"])
         df["data_evento"] = pd.to_datetime(df["data_evento"]).dt.date
 
     return df
+
+
+def carregar_comparacao_disparos_mensais(
+    empresas: List[str],
+    departamentos: List[str],
+) -> pd.DataFrame:
+    filtro_sql, params = _filtros_eventos(empresas, departamentos)
+    colunas = [
+        "empresa",
+        "departamento",
+        "numero_contrato",
+        "contrato",
+        "razao_social",
+        "ano_mes",
+        "total_disparos",
+    ]
+    if not filtro_sql:
+        return pd.DataFrame(columns=colunas)
+    consulta = text(f"""
+        SELECT
+            empresa,
+            departamento,
+            numero_contrato,
+            contrato,
+            razao_social,
+            COALESCE(
+                TO_CHAR(data_evento, 'YYYY-MM'),
+                CASE
+                    WHEN ano_mes ~ '^\\d{4}-\\d{2}$' THEN ano_mes
+                END
+            ) AS ano_mes,
+            COUNT(id) AS total_disparos
+        FROM disparos_eventos
+        WHERE (data_evento IS NOT NULL
+               OR ano_mes ~ '^\\d{4}-\\d{2}$'){filtro_sql}
+        GROUP BY
+            empresa, departamento, numero_contrato, contrato, razao_social,
+            COALESCE(
+                TO_CHAR(data_evento, 'YYYY-MM'),
+                CASE
+                    WHEN ano_mes ~ '^\\d{4}-\\d{2}$' THEN ano_mes
+                END
+            )
+        ORDER BY ano_mes, empresa, departamento, numero_contrato
+    """).bindparams(
+        bindparam("empresas", expanding=True),
+        bindparam("departamentos", expanding=True),
+    )
+    with engine.connect() as conn:
+        return _read_sql(
+            consulta,
+            conn,
+            nome="comparacao_disparos_mensais",
+            params=params,
+        ).loc[:, colunas]
+
+
+def carregar_alertas_mau_uso() -> pd.DataFrame:
+    consulta = text("""
+        WITH por_contrato AS (
+            SELECT
+                numero_contrato,
+                COUNT(*) FILTER (
+                    WHERE EXTRACT(HOUR FROM dt_hora) BETWEEN 6 AND 9
+                       OR EXTRACT(HOUR FROM dt_hora) BETWEEN 18 AND 21
+                ) AS disparos_abertura_fechamento,
+                COUNT(*) FILTER (
+                    WHERE NOT COALESCE(
+                        EXTRACT(HOUR FROM dt_hora) BETWEEN 6 AND 9
+                        OR EXTRACT(HOUR FROM dt_hora) BETWEEN 18 AND 21,
+                        FALSE
+                    )
+                ) AS disparos_outros_periodos
+            FROM disparos_eventos
+            WHERE numero_contrato IS NOT NULL
+              AND BTRIM(numero_contrato) <> ''
+            GROUP BY numero_contrato
+        )
+        SELECT
+            numero_contrato AS "NUMERO_CONTRATO",
+            disparos_abertura_fechamento AS "DISPAROS_ABERTURA_FECHAMENTO",
+            disparos_outros_periodos AS "DISPAROS_OUTROS_PERIODOS"
+        FROM por_contrato
+        WHERE disparos_abertura_fechamento >= 4
+          AND disparos_outros_periodos = 0
+        ORDER BY disparos_abertura_fechamento DESC
+    """)
+    with engine.connect() as conn:
+        return _read_sql(consulta, conn, nome="alertas_mau_uso")
+
+
+def carregar_limitadores() -> pd.DataFrame:
+    consulta = text("""
+        SELECT
+            numero_contrato AS "NUMERO_CONTRATO",
+            data_evento AS "DATA_EVENTO",
+            EXTRACT(HOUR FROM dt_hora)::INTEGER AS "HORA",
+            COUNT(*) AS "OCORRENCIAS"
+        FROM disparos_eventos
+        WHERE numero_contrato IS NOT NULL
+          AND BTRIM(numero_contrato) <> ''
+          AND data_evento IS NOT NULL
+          AND dt_hora IS NOT NULL
+        GROUP BY
+            numero_contrato,
+            data_evento,
+            EXTRACT(HOUR FROM dt_hora)
+        HAVING COUNT(*) >= 5
+        ORDER BY numero_contrato, data_evento, "HORA"
+    """)
+    with engine.connect() as conn:
+        return _read_sql(consulta, conn, nome="limitadores")
 
 
 def carregar_acompanhamento_diario(
@@ -782,9 +1295,10 @@ def carregar_acompanhamento_diario(
     )
 
     with engine.connect() as conn:
-        df = pd.read_sql(
+        df = _read_sql(
             consulta,
             conn,
+            nome="acompanhamento_diario",
             params={
                 "inicio": data_inicio,
                 "fim": data_fim,

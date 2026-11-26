@@ -134,8 +134,12 @@ def test_carregar_periodos_analise_sensores_retorna_datas_e_horas_com_sensor(
     resultado = database.carregar_periodos_analise_sensores()
 
     assert resultado.loc[0, "hora_cheia"] == 12
-    assert "FROM vw_analise_disp_sensor" in chamadas["consulta"]
-    assert "hora_cheia BETWEEN 0 AND 23" in chamadas["consulta"]
+    assert "FROM analise a" in chamadas["consulta"]
+    assert "JOIN disparos_sensor ds ON ds.snapshot_id = sr.id" in (
+        chamadas["consulta"]
+    )
+    assert "ds.modelo_sensor NOT IN ('VAZIO', 'SEM ZONA')" in chamadas["consulta"]
+    assert "a.hora_cheia BETWEEN 0 AND 23" in chamadas["consulta"]
 
 
 def test_carregar_contratos_analise_sensores_filtra_data_e_hora(monkeypatch):
@@ -177,3 +181,86 @@ def test_carregar_contratos_analise_sensores_filtra_data_e_hora(monkeypatch):
 def test_carregar_contratos_analise_sensores_rejeita_hora_invalida():
     with pytest.raises(ValueError, match="entre 0 e 23"):
         database.carregar_contratos_analise_sensores(date(2026, 11, 10), 24)
+
+
+def test_carregar_relatorio_sensores_filtra_datas_horas_e_contratos_no_banco(
+    monkeypatch,
+):
+    chamadas = {}
+
+    class ReadEngine:
+        @contextmanager
+        def connect(self):
+            yield object()
+
+    def ler_sql(consulta, conexao, params=None):
+        chamadas["consulta"] = str(consulta)
+        chamadas["params"] = params
+        return pd.DataFrame()
+
+    monkeypatch.setattr(database, "engine", ReadEngine())
+    monkeypatch.setattr(database.pd, "read_sql", ler_sql)
+
+    database.carregar_relatorio_sensores_periodo(
+        date(2026, 9, 1),
+        date(2026, 9, 7),
+        2,
+        16,
+    )
+
+    assert "period_end BETWEEN :data_inicio AND :data_fim" in chamadas["consulta"]
+    assert "d.data BETWEEN :data_inicio AND :data_fim" in chamadas["consulta"]
+    assert "a.dia BETWEEN :data_inicio AND :data_fim" in chamadas["consulta"]
+    assert "a.hora_cheia BETWEEN :hora_inicio AND :hora_fim" in chamadas["consulta"]
+    assert "EXISTS (" in chamadas["consulta"]
+    assert chamadas["params"] == {
+        "data_inicio": date(2026, 9, 1),
+        "data_fim": date(2026, 9, 7),
+        "hora_inicio": 2,
+        "hora_fim": 16,
+    }
+
+
+def test_carregar_relatorio_sensores_rejeita_intervalos_invalidos():
+    with pytest.raises(ValueError, match="data_inicio"):
+        database.carregar_relatorio_sensores_periodo(
+            date(2026, 9, 8),
+            date(2026, 9, 7),
+            2,
+            16,
+        )
+    with pytest.raises(ValueError, match="faixa horária"):
+        database.carregar_relatorio_sensores_periodo(
+            date(2026, 9, 1),
+            date(2026, 9, 7),
+            16,
+            2,
+        )
+
+
+def test_carregar_distribuicao_horaria_filtra_periodo_e_horas(monkeypatch):
+    chamadas = {}
+
+    class ReadEngine:
+        @contextmanager
+        def connect(self):
+            yield object()
+
+    def ler_sql(consulta, conexao, params=None):
+        chamadas["consulta"] = str(consulta)
+        chamadas["params"] = params
+        return pd.DataFrame([{"hora": 2, "analises": 5}])
+
+    monkeypatch.setattr(database, "engine", ReadEngine())
+    monkeypatch.setattr(database.pd, "read_sql", ler_sql)
+
+    resultado = database.carregar_distribuicao_horaria_analise_sensores(
+        date(2026, 9, 1),
+        date(2026, 9, 7),
+        2,
+        16,
+    )
+
+    assert resultado.loc[0, "analises"] == 5
+    assert "dia BETWEEN :data_inicio AND :data_fim" in chamadas["consulta"]
+    assert "hora_cheia BETWEEN :hora_inicio AND :hora_fim" in chamadas["consulta"]

@@ -86,7 +86,63 @@ def test_monitoramento_filtra_data_e_intervalo_horario(monkeypatch):
     database = types.ModuleType("src.database")
     database.verificar_integridade_banco = lambda: None
     database.sincronizar_planilhas = lambda: None
-    database.carregar_eventos = lambda: eventos
+    database.carregar_opcoes_eventos = lambda: {
+        "empresas": ["FILIAL ALFA"],
+        "departamentos": ["Smart Alarm"],
+    }
+    database.carregar_meses_eventos = lambda empresas, departamentos: [
+        data_hoje.strftime("%Y-%m")
+    ]
+    database.carregar_intervalo_eventos = (
+        lambda empresas, departamentos, limite=None: (
+            data_anterior,
+            min(data_hoje, limite) if limite else data_hoje,
+        )
+    )
+
+    def carregar_eventos(inicio, fim, empresas, departamentos, **kwargs):
+        resultado = eventos.loc[
+            eventos["empresa"].isin(empresas)
+            & eventos["departamento"].isin(departamentos)
+        ].copy()
+        if inicio is not None:
+            resultado = resultado.loc[resultado["data_evento"] >= inicio]
+        if fim is not None:
+            resultado = resultado.loc[resultado["data_evento"] <= fim]
+        if kwargs.get("ano_mes") is not None:
+            resultado = resultado.loc[
+                resultado["ano_mes"] == kwargs["ano_mes"]
+            ]
+        if "minuto_inicio" in kwargs:
+            resultado = resultado.loc[
+                resultado["minuto_do_dia"].between(
+                    kwargs["minuto_inicio"], kwargs["minuto_fim"]
+                )
+            ]
+        return resultado
+
+    database.carregar_eventos = carregar_eventos
+    database.carregar_comparacao_disparos_mensais = lambda empresas, departamentos: pd.DataFrame(
+        columns=[
+            "empresa",
+            "departamento",
+            "numero_contrato",
+            "contrato",
+            "razao_social",
+            "ano_mes",
+            "total_disparos",
+        ]
+    )
+    database.carregar_alertas_mau_uso = lambda: pd.DataFrame(
+        columns=[
+            "NUMERO_CONTRATO",
+            "DISPAROS_ABERTURA_FECHAMENTO",
+            "DISPAROS_OUTROS_PERIODOS",
+        ]
+    )
+    database.carregar_limitadores = lambda: pd.DataFrame(
+        columns=["NUMERO_CONTRATO", "DATA_EVENTO", "HORA", "OCORRENCIAS"]
+    )
     database.carregar_relatorio_sensores = lambda: relatorio_sensores
     database.carregar_periodos_analise_sensores = lambda: pd.DataFrame(
         [{"dia": date(2026, 11, 24), "hora_cheia": 12}]
@@ -100,6 +156,22 @@ def test_monitoramento_filtra_data_e_intervalo_horario(monkeypatch):
                     "estado": "MG",
                 }
             ]
+        )
+    )
+    database.carregar_intervalo_analise_sensores = lambda: (
+        date(2026, 11, 23),
+        date(2026, 11, 24),
+    )
+    chamadas_sensores = []
+
+    def carregar_sensores_periodo(inicio, fim, hora_inicio, hora_fim):
+        chamadas_sensores.append((inicio, fim, hora_inicio, hora_fim))
+        return relatorio_sensores.iloc[:1].copy()
+
+    database.carregar_relatorio_sensores_periodo = carregar_sensores_periodo
+    database.carregar_distribuicao_horaria_analise_sensores = (
+        lambda inicio, fim, hora_inicio, hora_fim: pd.DataFrame(
+            [{"hora": 12, "analises": 1}]
         )
     )
     database.carregar_acompanhamento_diario = lambda inicio, fim, empresas, departamentos: (
@@ -133,14 +205,30 @@ def test_monitoramento_filtra_data_e_intervalo_horario(monkeypatch):
     assert metricas["Registros de contrato/dia"] == "1"
     assert metricas["Clientes identificados"] == "1"
     assert metricas["Mensagens no período · API"] == "5"
-    assert next(
-        elemento for elemento in app.date_input if elemento.label == "Data da análise"
-    ).value == date(2026, 11, 24)
-    assert next(
+    seletor_periodo_sensor = next(
         elemento
-        for elemento in app.selectbox
-        if elemento.label == "Hora da análise"
-    ).value == 12
+        for elemento in app.date_input
+        if elemento.label == "Período das análises"
+    )
+    assert seletor_periodo_sensor.value == (
+        date(2026, 11, 23),
+        date(2026, 11, 24),
+    )
+    seletor_horas_sensor = next(
+        elemento
+        for elemento in app.slider
+        if elemento.label == "Faixa horária das análises"
+    )
+    assert seletor_horas_sensor.value == (0, 23)
+    seletor_periodo_sensor.set_value((date(2026, 11, 23), date(2026, 11, 24)))
+    seletor_horas_sensor.set_value((2, 16))
+    app.run(timeout=10)
+    assert chamadas_sensores[-1] == (
+        date(2026, 11, 23),
+        date(2026, 11, 24),
+        2,
+        16,
+    )
 
     seletor_data = next(
         elemento for elemento in app.date_input if elemento.label == "Dia dos eventos"

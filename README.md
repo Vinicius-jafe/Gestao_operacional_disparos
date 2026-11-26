@@ -82,11 +82,16 @@ A aba **Sensores** combina o snapshot mais recente de cada período, incluindo o
 registros históricos diários importados, e mostra registros por modelo, zonas
 principais e contagens por cliente. A tabela exibe a data de cada registro; para
 os snapshots do endpoint agregado, ela representa o fim da janela consultada.
-Os filtros de data e hora usam `analise.dia` e `analise.hora_cheia`; os sensores
-exibidos são os contratos relacionados aos eventos naquela hora. Como o endpoint
-de sensores agrega dados por dia e não retorna o horário individual nem todas
-as zonas instaladas, essa associação por hora é aproximada e não identifica o
-horário real de disparo de cada sensor.
+Os filtros de período e faixa horária usam `analise.dia` e
+`analise.hora_cheia`; por padrão, a aba mostra os últimos sete dias disponíveis
+e a faixa completa de 00:00 a 23:00. Os intervalos são inclusivos e podem ser
+ajustados, por exemplo, para 1 a 7 de setembro e 02:00 a 16:00. A consulta
+retorna somente sensores dos contratos relacionados às análises nesse recorte.
+O gráfico diário resume registros de sensores por dia; o gráfico por hora conta
+análises associadas, não disparos de sensores. Como o endpoint agrega dados por
+dia e não retorna o horário individual nem todas as zonas instaladas, essa
+associação é aproximada e não identifica o horário real de disparo de cada
+sensor.
 
 ## Previsões mensais
 
@@ -110,6 +115,23 @@ continuam considerando todo o histórico, sem o filtro.
 O monitoramento por dia e horário considera todo o histórico disponível até
 hoje, incluindo os disparos do dia atual, e atualiza essa seção automaticamente
 a cada cinco minutos.
+
+## Desempenho do painel
+
+O painel busca no PostgreSQL somente as colunas e o período selecionados. Os
+filtros de filial, departamento, data e horário são aplicados na consulta;
+monitoramento e acompanhamento consultam seus próprios recortes, enquanto
+comparações mensais e alertas históricos são agregados no banco. Resultados de
+consultas e cálculos reutilizáveis ficam em cache por 60 segundos. A exportação
+Excel da aba de reincidência só é preparada após clicar em **Preparar relatório
+Excel**.
+
+Os logs do serviço `painel-disparos` registram `Desempenho DB`, com o tempo de
+execução do driver (incluindo a espera pela resposta do PostgreSQL), o tempo
+restante de leitura/conversão para DataFrame, quantidade de linhas e tamanho
+estimado do DataFrame. Também registram os cálculos de previsão e reincidência
+e o tempo total de execução no servidor para renderizar o painel. Esse último
+valor não mede o tempo de pintura no navegador.
 
 Como o esquema atual de eventos não possui uma coluna de indicador separada, a
 coluna **J (indicador)** corresponde ao total de disparos do mês atual (**I**);

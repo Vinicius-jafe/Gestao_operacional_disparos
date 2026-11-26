@@ -146,6 +146,8 @@ CREATE INDEX IF NOT EXISTS idx_disparos_departamento ON disparos_eventos (depart
 CREATE INDEX IF NOT EXISTS idx_disparos_ano_mes ON disparos_eventos (ano_mes);
 CREATE INDEX IF NOT EXISTS idx_disparos_data_evento ON disparos_eventos (data_evento);
 CREATE INDEX IF NOT EXISTS idx_disparos_chave_cliente ON disparos_eventos (chave_cliente);
+CREATE INDEX IF NOT EXISTS idx_analise_dia_hora
+    ON analise (dia, hora_cheia);
 CREATE INDEX IF NOT EXISTS idx_alarm_report_snapshots_collected_at
     ON alarm_report_snapshots (collected_at);
 CREATE INDEX IF NOT EXISTS idx_disparos_sensor_snapshot_department
