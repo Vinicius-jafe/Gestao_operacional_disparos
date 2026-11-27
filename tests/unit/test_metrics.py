@@ -3,6 +3,7 @@ import pytest
 
 from src.metrics import (
     calcular_metricas_filiais,
+    calcular_status_reincidencia_recente,
     preparar_serie_diaria,
     processar_reincidencia_clientes,
 )
@@ -151,6 +152,67 @@ def test_processar_reincidencia_clientes_retorna_apenas_metricas_de_disparos(
         "DIAS_DISTINTOS",
         "CRITICIDADE_PARETO",
     ]
+
+
+def test_calcular_status_reincidencia_recente_deduplica_e_separa_atividade():
+    eventos_historicos = pd.DataFrame(
+        [
+            (1, "cliente-a", "Cliente A", "Filial A", "Smart", "2026-08-01"),
+            (2, "cliente-a", "Cliente A", "Filial A", "Smart", "2026-08-02"),
+            (3, "cliente-a", "Cliente A", "Filial A", "Smart", "2026-08-02"),
+            (4, "cliente-b", "Cliente B", "Filial A", "Smart", "2026-08-01"),
+            (5, "cliente-c", "Cliente C", "Filial B", "Outros", "2026-08-01"),
+            (6, "cliente-c", "Cliente C", "Filial B", "Outros", "2026-08-03"),
+        ],
+        columns=[
+            "id",
+            "chave_cliente",
+            "razao_social",
+            "empresa",
+            "departamento",
+            "data_evento",
+        ],
+    )
+    eventos_recentes = pd.DataFrame(
+        [
+            (7, "cliente-a", "Cliente A", "Filial A", "Smart", "2026-11-24"),
+            (7, "cliente-a", "Cliente A", "Filial A", "Smart", "2026-11-24"),
+        ],
+        columns=eventos_historicos.columns,
+    )
+
+    resultado = calcular_status_reincidencia_recente(
+        eventos_historicos,
+        eventos_recentes,
+    ).set_index("CHAVE_CLIENTE")
+
+    assert resultado.index.tolist() == ["cliente-a", "cliente-c"]
+    assert resultado.loc["cliente-a", "DIAS_ATIVOS_90_DIAS"] == 2
+    assert resultado.loc["cliente-a", "DISPAROS_ULTIMOS_7_DIAS"] == 1
+    assert resultado.loc["cliente-a", "DIAS_ATIVOS_ULTIMOS_7_DIAS"] == 1
+    assert resultado.loc["cliente-a", "ULTIMO_DISPARO"] == pd.Timestamp(
+        "2026-11-24"
+    ).date()
+    assert resultado.loc["cliente-a", "STATUS_ULTIMOS_7_DIAS"] == "Disparando"
+    assert resultado.loc["cliente-c", "DISPAROS_ULTIMOS_7_DIAS"] == 0
+    assert resultado.loc["cliente-c", "STATUS_ULTIMOS_7_DIAS"] == "Sem disparos"
+
+
+def test_calcular_status_reincidencia_recente_valida_colunas_obrigatorias():
+    eventos_historicos = pd.DataFrame(
+        {
+            "chave_cliente": ["cliente-a"],
+            "razao_social": ["Cliente A"],
+            "empresa": ["Filial A"],
+            "data_evento": ["2026-08-01"],
+        }
+    )
+
+    with pytest.raises(KeyError, match="departamento"):
+        calcular_status_reincidencia_recente(
+            eventos_historicos,
+            pd.DataFrame(),
+        )
 
 
 def test_preparar_serie_diaria_preenche_dias_sem_disparos_com_zero():

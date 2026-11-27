@@ -25,6 +25,17 @@ COLUNAS_RECORRENCIA_COMPLEMENTAR = [
     "MEDIA_DISPAROS_MES",
     "MAX_DISPAROS_MES",
 ]
+COLUNAS_STATUS_REINCIDENCIA = [
+    "CHAVE_CLIENTE",
+    "RAZAO_SOCIAL",
+    "EMPRESA",
+    "DEPARTAMENTO",
+    "DIAS_ATIVOS_90_DIAS",
+    "DISPAROS_ULTIMOS_7_DIAS",
+    "DIAS_ATIVOS_ULTIMOS_7_DIAS",
+    "ULTIMO_DISPARO",
+    "STATUS_ULTIMOS_7_DIAS",
+]
 COLUNAS_COMPARACAO_MENSAL = [
     "empresa",
     "departamento",
@@ -333,6 +344,108 @@ def calcular_recorrencia_complementar(df: pd.DataFrame) -> pd.DataFrame:
     return (
         resultado.loc[:, COLUNAS_RECORRENCIA_COMPLEMENTAR]
         .sort_values("TOTAL_DISPAROS", ascending=False)
+        .reset_index(drop=True)
+    )
+
+
+def calcular_status_reincidencia_recente(
+    eventos_historicos: pd.DataFrame,
+    eventos_recentes: pd.DataFrame,
+) -> pd.DataFrame:
+    """Lista clientes ativos em ao menos dois dias do histórico e sua atividade recente."""
+    colunas = COLUNAS_STATUS_REINCIDENCIA
+    for nome, dataframe in (
+        ("eventos_historicos", eventos_historicos),
+        ("eventos_recentes", eventos_recentes),
+    ):
+        if not isinstance(dataframe, pd.DataFrame):
+            raise TypeError(f"{nome} deve ser um pandas.DataFrame")
+
+    if eventos_historicos.empty:
+        return pd.DataFrame(columns=colunas)
+
+    colunas_obrigatorias = {
+        "chave_cliente",
+        "razao_social",
+        "empresa",
+        "departamento",
+        "data_evento",
+    }
+    for nome, dataframe in (
+        ("eventos_historicos", eventos_historicos),
+        ("eventos_recentes", eventos_recentes),
+    ):
+        if dataframe.empty:
+            continue
+        faltantes = colunas_obrigatorias.difference(dataframe.columns)
+        if faltantes:
+            raise KeyError(f"Colunas obrigatórias ausentes: {sorted(faltantes)}")
+
+    historico = _deduplicar_eventos(eventos_historicos).copy()
+    chave = historico["chave_cliente"].astype("string").str.strip()
+    historico["chave_cliente"] = chave
+    historico["data_evento"] = pd.to_datetime(
+        historico["data_evento"], errors="coerce"
+    ).dt.date
+    historico = historico.loc[
+        chave.notna() & chave.ne("") & historico["data_evento"].notna()
+    ].copy()
+    if historico.empty:
+        return pd.DataFrame(columns=colunas)
+
+    reincidentes = (
+        historico.groupby("chave_cliente", as_index=False)
+        .agg(
+            RAZAO_SOCIAL=("razao_social", "first"),
+            EMPRESA=("empresa", "first"),
+            DEPARTAMENTO=("departamento", "first"),
+            DIAS_ATIVOS_90_DIAS=("data_evento", "nunique"),
+        )
+        .loc[lambda base: base["DIAS_ATIVOS_90_DIAS"] >= 2]
+    )
+
+    if eventos_recentes.empty:
+        resultado = reincidentes.copy()
+        resultado["DISPAROS_ULTIMOS_7_DIAS"] = 0
+        resultado["DIAS_ATIVOS_ULTIMOS_7_DIAS"] = 0
+        resultado["ULTIMO_DISPARO"] = pd.NaT
+    else:
+        recentes = _deduplicar_eventos(eventos_recentes).copy()
+        chave_recente = recentes["chave_cliente"].astype("string").str.strip()
+        recentes["chave_cliente"] = chave_recente
+        recentes["data_evento"] = pd.to_datetime(
+            recentes["data_evento"], errors="coerce"
+        ).dt.date
+        recentes = recentes.loc[
+            chave_recente.notna()
+            & chave_recente.ne("")
+            & recentes["data_evento"].notna()
+        ].copy()
+        recentes = (
+            recentes.groupby("chave_cliente", as_index=False)
+            .agg(
+                DISPAROS_ULTIMOS_7_DIAS=("chave_cliente", "size"),
+                DIAS_ATIVOS_ULTIMOS_7_DIAS=("data_evento", "nunique"),
+                ULTIMO_DISPARO=("data_evento", "max"),
+            )
+        )
+        resultado = reincidentes.merge(recentes, on="chave_cliente", how="left")
+        resultado["DISPAROS_ULTIMOS_7_DIAS"] = (
+            resultado["DISPAROS_ULTIMOS_7_DIAS"].fillna(0).astype(int)
+        )
+        resultado["DIAS_ATIVOS_ULTIMOS_7_DIAS"] = (
+            resultado["DIAS_ATIVOS_ULTIMOS_7_DIAS"].fillna(0).astype(int)
+        )
+    resultado["STATUS_ULTIMOS_7_DIAS"] = resultado[
+        "DISPAROS_ULTIMOS_7_DIAS"
+    ].map(lambda disparos: "Disparando" if disparos else "Sem disparos")
+    resultado = resultado.rename(columns={"chave_cliente": "CHAVE_CLIENTE"})
+    return (
+        resultado.loc[:, colunas]
+        .sort_values(
+            ["DISPAROS_ULTIMOS_7_DIAS", "DIAS_ATIVOS_90_DIAS"],
+            ascending=[False, False],
+        )
         .reset_index(drop=True)
     )
 

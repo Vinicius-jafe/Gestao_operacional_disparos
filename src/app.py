@@ -33,6 +33,7 @@ from src.metrics import (
     calcular_distribuicao_periodos,
     calcular_metricas_filiais,
     calcular_recorrencia_complementar,
+    calcular_status_reincidencia_recente,
     calcular_taxa_por_carteira,
     filtrar_por_periodos_horarios,
     preparar_serie_diaria,
@@ -892,6 +893,116 @@ with tab_pareto:
         renderizar_clientes(clientes_outros, "reincidencia_outros.xlsx", "Outros")
     with aba_todos:
         renderizar_clientes(clientes_todos, "reincidencia_geral.xlsx", "Geral")
+
+    inicio_ultimos_7_dias = ontem - timedelta(days=6)
+    fim_historico_reincidencia = inicio_ultimos_7_dias - timedelta(days=1)
+    inicio_historico_reincidencia = fim_historico_reincidencia - timedelta(days=89)
+    eventos_janela_reincidencia = obter_eventos(
+        inicio_historico_reincidencia,
+        ontem,
+        empresas_filtro,
+        departamentos_filtro,
+    )
+    datas_eventos_janela = pd.to_datetime(
+        eventos_janela_reincidencia["data_evento"], errors="coerce"
+    ).dt.date
+    eventos_historicos_reincidencia = eventos_janela_reincidencia.loc[
+        datas_eventos_janela.between(
+            inicio_historico_reincidencia,
+            fim_historico_reincidencia,
+        )
+    ]
+    eventos_recentes_reincidencia = eventos_janela_reincidencia.loc[
+        datas_eventos_janela.between(inicio_ultimos_7_dias, ontem)
+    ]
+    st.subheader("Atividade recente dos reincidentes")
+    st.caption(
+        "Reincidente: disparos em pelo menos 2 dias distintos nos 90 dias anteriores. "
+        f"Atividade recente: {inicio_ultimos_7_dias:%d/%m/%Y} a {ontem:%d/%m/%Y}."
+    )
+
+    def filtrar_categoria_eventos(dataframe, categoria):
+        if dataframe.empty:
+            return dataframe
+        mascara_smart = dataframe["departamento"].str.upper().str.contains(
+            "SMART", na=False
+        )
+        if categoria == "smart":
+            return dataframe.loc[mascara_smart]
+        if categoria == "outros":
+            return dataframe.loc[~mascara_smart]
+        return dataframe
+
+    def obter_atividade_categoria(categoria):
+        return calcular_status_reincidencia_recente(
+            filtrar_categoria_eventos(
+                eventos_historicos_reincidencia, categoria
+            ),
+            filtrar_categoria_eventos(eventos_recentes_reincidencia, categoria),
+        )
+
+    atividade_smart = obter_atividade_categoria("smart")
+    atividade_outros = obter_atividade_categoria("outros")
+    atividade_reincidencia = obter_atividade_categoria("todos")
+    atividade_abas = st.tabs(
+        [
+            f"SMART · {len(atividade_smart)}",
+            f"Outros · {len(atividade_outros)}",
+            f"Todos · {len(atividade_reincidencia)}",
+        ]
+    )
+
+    def renderizar_atividade_reincidentes(dataframe):
+        if dataframe.empty:
+            st.info("Não há clientes reincidentes nesta janela de 90 dias.")
+            return
+        dados_atividade = dataframe.rename(
+            columns={
+                "CHAVE_CLIENTE": "CHAVE DO CLIENTE",
+                "RAZAO_SOCIAL": "CLIENTE",
+                "EMPRESA": "FILIAL",
+                "DIAS_ATIVOS_90_DIAS": "DIAS ATIVOS · 90 DIAS",
+                "DISPAROS_ULTIMOS_7_DIAS": "DISPAROS · 7 DIAS",
+                "DIAS_ATIVOS_ULTIMOS_7_DIAS": "DIAS ATIVOS · 7 DIAS",
+                "ULTIMO_DISPARO": "ÚLTIMO DISPARO",
+                "STATUS_ULTIMOS_7_DIAS": "STATUS · 7 DIAS",
+            }
+        )
+        st.dataframe(
+            dados_atividade,
+            hide_index=True,
+            width="stretch",
+            column_config={
+                "CHAVE DO CLIENTE": st.column_config.TextColumn(
+                    "CHAVE DO CLIENTE", width="medium"
+                ),
+                "CLIENTE": st.column_config.TextColumn("CLIENTE", width="large"),
+                "FILIAL": st.column_config.TextColumn("FILIAL", width="medium"),
+                "DEPARTAMENTO": st.column_config.TextColumn(
+                    "DEPARTAMENTO", width="medium"
+                ),
+                "DIAS ATIVOS · 90 DIAS": st.column_config.NumberColumn(
+                    "DIAS ATIVOS · 90 DIAS", format="%d"
+                ),
+                "DISPAROS · 7 DIAS": st.column_config.NumberColumn(
+                    "DISPAROS · 7 DIAS", format="%d"
+                ),
+                "DIAS ATIVOS · 7 DIAS": st.column_config.NumberColumn(
+                    "DIAS ATIVOS · 7 DIAS", format="%d"
+                ),
+                "ÚLTIMO DISPARO": st.column_config.DateColumn("ÚLTIMO DISPARO"),
+                "STATUS · 7 DIAS": st.column_config.TextColumn(
+                    "STATUS · 7 DIAS", width="medium"
+                ),
+            },
+        )
+
+    with atividade_abas[0]:
+        renderizar_atividade_reincidentes(atividade_smart)
+    with atividade_abas[1]:
+        renderizar_atividade_reincidentes(atividade_outros)
+    with atividade_abas[2]:
+        renderizar_atividade_reincidentes(atividade_reincidencia)
 
     with st.expander("Indicadores complementares de recorrência", expanded=False):
         st.caption(
